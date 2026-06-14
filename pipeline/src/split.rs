@@ -179,7 +179,7 @@ fn cumulative_lengths(geometry: &[(f64, f64)]) -> Vec<f64> {
 }
 
 /// Sum of Haversine distances along a polyline.
-fn polyline_length_m(geom: &[(f64, f64)]) -> f64 {
+pub(crate) fn polyline_length_m(geom: &[(f64, f64)]) -> f64 {
     geom.windows(2)
         .map(|w| haversine_m(w[0].0, w[0].1, w[1].0, w[1].1))
         .sum()

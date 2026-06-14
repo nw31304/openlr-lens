@@ -5,6 +5,8 @@ mod extent;
 mod extract;
 mod http;
 mod merge;
+mod osm_adapt;
+mod osm_extract;
 mod parquet_meta;
 mod partition;
 mod quantize;
@@ -46,16 +48,6 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::ListReleases => releases::list_and_print(&http::Client::new(retry)).await?,
         Command::Build(args) => {
-            let client    = http::Client::new(retry);
-            let available = releases::fetch(&client).await?;
-            if !available.contains(&args.release) {
-                anyhow::bail!(
-                    "release '{}' not found. Run `list-releases` to see available releases.",
-                    args.release
-                );
-            }
-            info!(release = %args.release, extent = %args.extent, "release validated");
-
             if let Some(n) = args.jobs {
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(n)
@@ -64,22 +56,53 @@ async fn main() -> Result<()> {
                 info!(threads = n, "rayon thread pool configured");
             }
 
-            let schema = schema::load(&args.schema)?;
-            let bbox   = extent::resolve(&args.extent)?;
+            let bbox = extent::resolve(&args.extent)?;
 
-            build::run(
-                &args.release,
-                &args.extent,
-                bbox,
-                &schema,
-                &args.output,
-                &client,
-                args.fetch_concurrency,
-                args.tile_zoom,
-                args.ram_gb,
-                args.bytes_per_segment,
-            )
-            .await?;
+            match args.pbf {
+                // ── OSM PBF path ──────────────────────────────────────────────
+                Some(pbf_path) => {
+                    build::run_osm(
+                        &pbf_path,
+                        &args.extent,
+                        bbox,
+                        &args.output,
+                        args.tile_zoom,
+                    )
+                    .await?;
+                }
+
+                // ── Overture path ─────────────────────────────────────────────
+                None => {
+                    let release = args.release.ok_or_else(|| {
+                        anyhow::anyhow!("either --pbf or --release must be provided")
+                    })?;
+                    let client    = http::Client::new(retry);
+                    let available = releases::fetch(&client).await?;
+                    if !available.contains(&release) {
+                        anyhow::bail!(
+                            "release '{}' not found. Run `list-releases` to see available releases.",
+                            release
+                        );
+                    }
+                    info!(release = %release, extent = %args.extent, "release validated");
+
+                    let schema = schema::load(&args.schema)?;
+
+                    build::run(
+                        &release,
+                        &args.extent,
+                        bbox,
+                        &schema,
+                        &args.output,
+                        &client,
+                        args.fetch_concurrency,
+                        args.tile_zoom,
+                        args.ram_gb,
+                        args.bytes_per_segment,
+                    )
+                    .await?;
+                }
+            }
         }
     }
     Ok(())

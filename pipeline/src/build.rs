@@ -12,6 +12,124 @@ use crate::{
     schema::SchemaMapping,
 };
 
+// ── OSM PBF build path ────────────────────────────────────────────────────────
+
+/// Build a PMTiles archive from a local OSM PBF file.
+///
+/// Skips the Overture-specific adapt/split/restrictions steps; instead calls
+/// `osm_extract::extract` + `osm_adapt::adapt` which produce split edges,
+/// nodes, and restrictions directly from OSM tags.
+pub async fn run_osm(
+    pbf_path:    &Path,
+    extent_spec: &str,
+    bbox:        Option<Bbox>,
+    output:      &Path,
+    tile_zoom:   u8,
+) -> Result<()> {
+    std::fs::create_dir_all(output)?;
+    let t0 = Instant::now();
+
+    let extent_slug  = crate::extent::extent_slug(extent_spec);
+    let pbf_stem     = pbf_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("osm");
+    // Strip compression suffix if present (e.g. "new-zealand-latest.osm.pbf" → "new-zealand-latest")
+    let release_label = pbf_stem.trim_end_matches(".osm");
+
+    info!(
+        pbf   = %pbf_path.display(),
+        extent = %extent_slug,
+        output = %output.display(),
+        "OSM build started"
+    );
+
+    // Step 1: extract ─────────────────────────────────────────────────────────
+    let osm_data = {
+        let _s = info_span!("osm_extract").entered();
+        let pbf_path = pbf_path.to_path_buf();
+        let data = tokio::task::spawn_blocking(move || {
+            crate::osm_extract::extract(&pbf_path, bbox)
+        })
+        .await
+        .context("osm_extract panicked")??;
+        info!(
+            ways         = data.ways.len(),
+            nodes        = data.nodes.len(),
+            restrictions = data.restrictions.len(),
+            elapsed_s    = t0.elapsed().as_secs_f32(),
+            "OSM extract complete"
+        );
+        data
+    };
+
+    // Step 2: adapt + split ───────────────────────────────────────────────────
+    let (edges, nodes, restrictions) = {
+        let _s = info_span!("osm_adapt").entered();
+        let (edges, nodes, restrictions) = tokio::task::spawn_blocking(move || {
+            crate::osm_adapt::adapt(osm_data)
+        })
+        .await
+        .context("osm_adapt panicked")?;
+
+        let dir_fwd  = edges.iter().filter(|e| matches!(e.direction, openlr_graph::Direction::Forward)).count();
+        let dir_bwd  = edges.iter().filter(|e| matches!(e.direction, openlr_graph::Direction::Backward)).count();
+        let dir_both = edges.iter().filter(|e| matches!(e.direction, openlr_graph::Direction::Both)).count();
+        info!(
+            edges        = edges.len(),
+            nodes        = nodes.len(),
+            restrictions = restrictions.len(),
+            dir_forward  = dir_fwd,
+            dir_backward = dir_bwd,
+            dir_both,
+            elapsed_s    = t0.elapsed().as_secs_f32(),
+            "OSM adapt complete"
+        );
+        (edges, nodes, restrictions)
+    };
+
+    // Step 3: quantize ────────────────────────────────────────────────────────
+    let (q_edges, q_nodes) = {
+        let _s = info_span!("quantize").entered();
+        let (qe, qn) = tokio::task::spawn_blocking(move || {
+            crate::quantize::quantize(edges, nodes)
+        })
+        .await
+        .context("quantize panicked")?;
+        info!(
+            edges     = qe.len(),
+            nodes     = qn.len(),
+            elapsed_s = t0.elapsed().as_secs_f32(),
+            "quantize complete"
+        );
+        (qe, qn)
+    };
+
+    // Step 4: tile and write PMTiles ──────────────────────────────────────────
+    {
+        let _s = info_span!("tile").entered();
+        info!(tile_zoom, edges = q_edges.len(), restrictions = restrictions.len(), "tiling");
+        let output_dir    = output.to_path_buf();
+        let release_label = release_label.to_string();
+        let extent_slug   = extent_slug.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::tile::write_tiles(
+                q_edges, q_nodes, restrictions,
+                tile_zoom, &output_dir, &release_label, &extent_slug,
+            )
+        })
+        .await
+        .context("tile panicked")??;
+    }
+
+    info!(
+        elapsed_s = t0.elapsed().as_secs_f32(),
+        output    = %output.display(),
+        "OSM build complete"
+    );
+    Ok(())
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub async fn run(

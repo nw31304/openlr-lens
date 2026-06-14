@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "openlrlens-build", about = "Build OpenLRLens PMTiles from Overture Maps")]
+#[command(name = "openlrlens-build", about = "Build OpenLRLens PMTiles from Overture Maps or an OSM PBF file")]
 pub struct Cli {
     /// Increase log verbosity: -v = debug, -vv = trace. Overridden by RUST_LOG.
     #[arg(short, long, action = ArgAction::Count, global = true)]
@@ -38,16 +38,22 @@ pub enum Command {
 
 #[derive(clap::Args)]
 pub struct BuildArgs {
-    /// Overture release, e.g. 2026-05-20.0
+    /// OSM PBF file to build from (e.g. a Geofabrik regional extract).
+    /// Use this instead of --release to build from OSM instead of Overture.
+    #[arg(long, conflicts_with_all = ["release", "schema"])]
+    pub pbf: Option<PathBuf>,
+
+    /// Overture release, e.g. 2026-05-20.0.
+    /// Use this instead of --pbf to build from Overture parquet.
     #[arg(long)]
-    pub release: String,
+    pub release: Option<String>,
 
     /// Extent: ISO 3166-1 alpha-2 country code (NZ), continent name (oceania),
     /// 'world', or explicit bbox 'west,south,east,north'.
     #[arg(long)]
     pub extent: String,
 
-    /// Overture → OpenLR attribute mapping TOML file.
+    /// Overture → OpenLR attribute mapping TOML file (Overture source only).
     #[arg(long, default_value = "pipeline/schema/overture-default.toml")]
     pub schema: PathBuf,
 
@@ -59,7 +65,7 @@ pub struct BuildArgs {
     #[arg(short = 'j', long)]
     pub jobs: Option<usize>,
 
-    /// Maximum concurrent HTTP parquet file downloads.
+    /// Maximum concurrent HTTP parquet file downloads (Overture source only).
     #[arg(long, default_value_t = 8)]
     pub fetch_concurrency: usize,
 
