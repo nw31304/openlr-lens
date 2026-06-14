@@ -1,0 +1,10 @@
+[package]
+name    = "openlr-engine"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+openlr-codec    = { path = "../openlr-codec" }
+openlr-graph    = { path = "../openlr-graph" }
+serde.workspace     = true
+thiserror.workspace = true

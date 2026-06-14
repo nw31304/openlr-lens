@@ -1,0 +1,9 @@
+[package]
+name    = "openlr-provider"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+openlr-graph    = { path = "../openlr-graph" }
+serde.workspace     = true
+thiserror.workspace = true

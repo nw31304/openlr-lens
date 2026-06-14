@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenLRLens — tile inspector</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { height: 100vh; display: flex; flex-direction: column; font-family: sans-serif; }
+
+    #map { flex: 1; }
+
+    #status {
+      position: absolute;
+      top: 10px; left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,.65);
+      color: #fff;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      pointer-events: none;
+      transition: opacity .3s;
+    }
+    #status.hidden { opacity: 0; }
+
+    #info-panel {
+      position: absolute;
+      bottom: 28px; right: 10px;
+      width: 260px;
+      background: #fff;
+      border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.3);
+      font-size: 13px;
+      display: none;
+    }
+    #info-panel.visible { display: block; }
+    #info-panel header {
+      background: #2c3e50;
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 6px 6px 0 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #info-panel header button {
+      background: none; border: none; color: #fff; cursor: pointer; font-size: 16px;
+    }
+    #info-body { padding: 10px 12px; }
+    #info-body table { width: 100%; border-collapse: collapse; }
+    #info-body td { padding: 3px 0; vertical-align: top; }
+    #info-body td:first-child { color: #666; width: 110px; }
+
+    #legend {
+      position: absolute;
+      bottom: 28px; left: 10px;
+      background: rgba(255,255,255,.92);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.2);
+    }
+    #legend h4 { margin-bottom: 6px; font-size: 12px; color: #333; }
+    .legend-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+    .legend-swatch { width: 28px; height: 4px; border-radius: 2px; flex-shrink: 0; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="status" class="hidden">Loading tiles…</div>
+
+  <div id="info-panel">
+    <header>
+      <span>Segment</span>
+      <button id="close-info">✕</button>
+    </header>
+    <div id="info-body"></div>
+  </div>
+
+  <div id="legend">
+    <h4>FRC</h4>
+    <!-- populated by JS -->
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

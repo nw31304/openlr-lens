@@ -1,0 +1,6 @@
+/target/
+/out/
+**/*.pmtiles
+*.pbf
+node_modules/
+web/dist/

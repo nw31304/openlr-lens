@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members  = [
+    "crates/openlr-codec",
+    "crates/openlr-graph",
+    "crates/openlr-engine",
+    "crates/openlr-provider",
+    "crates/openlr-wasm",
+    "pipeline",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde       = { version = "1", features = ["derive"] }
+thiserror   = "2"
+anyhow      = "1"
+tokio       = { version = "1", features = ["full"] }
+tracing     = "0.1"

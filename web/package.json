@@ -1,0 +1,19 @@
+{
+  "name": "openlrlens-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "maplibre-gl": "^4",
+    "pmtiles": "^3"
+  },
+  "devDependencies": {
+    "vite": "^5"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true,
+    "fsevents@2.3.3": true
+  }
+}

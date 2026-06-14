@@ -1,0 +1,13 @@
+[package]
+name    = "openlr-wasm"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+openlr-codec    = { path = "../openlr-codec" }
+openlr-engine   = { path = "../openlr-engine" }
+openlr-provider = { path = "../openlr-provider" }
+serde.workspace     = true
