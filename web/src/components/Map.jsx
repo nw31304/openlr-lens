@@ -63,6 +63,29 @@ function parseWktLinestring(wkt) {
   });
 }
 
+function destinationPoint(lon, lat, bearingDeg, distM) {
+  const R = 6371000;
+  const φ1 = lat * Math.PI / 180;
+  const λ1 = lon * Math.PI / 180;
+  const θ  = bearingDeg * Math.PI / 180;
+  const δ  = distM / R;
+  const φ2 = Math.asin(Math.sin(φ1)*Math.cos(δ) + Math.cos(φ1)*Math.sin(δ)*Math.cos(θ));
+  const λ2 = λ1 + Math.atan2(Math.sin(θ)*Math.sin(δ)*Math.cos(φ1), Math.cos(δ) - Math.sin(φ1)*Math.sin(φ2));
+  return [λ2 * 180 / Math.PI, φ2 * 180 / Math.PI];
+}
+
+function bearingConeGeoJSON(lon, lat, lbDeg, ubDeg, radiusM) {
+  const center = [lon, lat];
+  let start = lbDeg;
+  let sweep = ((ubDeg - lbDeg) + 360) % 360;
+  if (sweep < 2) { start -= (2 - sweep) / 2; sweep = 2; } // minimum visual width for TPEG
+  const STEPS = 48;
+  const ring = [center];
+  for (let i = 0; i <= STEPS; i++) ring.push(destinationPoint(lon, lat, start + sweep * i / STEPS, radiusM));
+  ring.push(center);
+  return { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] }, properties: {} }] };
+}
+
 // ── Map Component ──────────────────────────────────────────────────────────────
 
 export default function MapView({ tilesBase, ready }) {
@@ -85,6 +108,7 @@ export default function MapView({ tilesBase, ready }) {
   const traceLrpFocus         = useStore(s => s.traceLrpFocus);
   const setTraceLrpFocus      = useStore(s => s.setTraceLrpFocus);
   const showSegmentLayer      = useStore(s => s.showSegmentLayer);
+  const searchRadiusM         = useStore(s => s.params.candidate_search_radius_m);
 
   // Always-current ref so the highlight effect can read decodeResult without
   // adding it to the dependency array (which would cause both effects to race).
@@ -181,6 +205,17 @@ export default function MapView({ tilesBase, ready }) {
           'circle-stroke-color': '#ffffff',
         },
       });
+
+      // ── LRP bearing cone (shown when an LRP is selected) ─────────────────
+      map.addSource('lrp-bearing', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({
+        id: 'lrp-bearing-fill', type: 'fill', source: 'lrp-bearing',
+        paint: { 'fill-color': '#aa00ff', 'fill-opacity': 0.18 },
+      }, 'lrp-markers-circle');
+      map.addLayer({
+        id: 'lrp-bearing-outline', type: 'line', source: 'lrp-bearing',
+        paint: { 'line-color': '#aa00ff', 'line-width': 1.5, 'line-opacity': 0.8 },
+      }, 'lrp-markers-circle');
 
       // ── Highlighted segment (sits above everything else) ──────────────────
       map.addSource('highlighted-segment', {
@@ -523,6 +558,18 @@ export default function MapView({ tilesBase, ready }) {
     // Allow re-clicking same LRP by clearing after acting
     setTraceLrpFocus(null);
   }, [traceLrpFocus, setTraceLrpFocus]);
+
+  // ── LRP bearing cone sync ─────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const src = map.getSource('lrp-bearing');
+    if (!src) return;
+    if (!lrpInfo) { src.setData({ type: 'FeatureCollection', features: [] }); return; }
+    const { lon, lat, bearing_lb, bearing_ub } = lrpInfo;
+    src.setData(bearingConeGeoJSON(lon, lat, bearing_lb, bearing_ub, searchRadiusM ?? 100));
+  }, [lrpInfo, searchRadiusM]);
 
   // ── Segment layer visibility toggle ──────────────────────────────────────────
 
