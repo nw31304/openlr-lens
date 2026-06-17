@@ -281,18 +281,23 @@ strips:
 ## 7. DNP validation (`validation.rs::validate_dnp`)
 
 ```
-half_bucket = (dnp.ub - dnp.lb) / 2.0           # half the encoding interval width
-pct_tol     = path_length_m × dnp_tolerance_pct  # percentage-of-path tolerance
-delta       = max(half_bucket, pct_tol)
-window      = [dnp.lb - delta, dnp.ub + delta]
-pass        = window.contains(path_length_m)
+delta  = path_length_m × dnp_tolerance_pct   # map-divergence tolerance only
+window = [dnp.lb − delta, dnp.ub + delta]
+pass   = window.contains(path_length_m)
 ```
 
-The two-term max is intentional:
-- `half_bucket` dominates for short paths (v3 quantisation is coarse relative to the path)
-- `pct_tol` dominates for long paths (map divergence accumulates with distance)
+For **v3**, `dnp` is the full bucket interval `[d × 58.6, (d+1) × 58.6]` where
+`d = ⌊encoded_length / 58.6⌋`. The bucket interval IS the valid range per the
+OpenLR spec — no additional half-bucket expansion is needed or correct.
 
-For TPEG (LB == UB, half_bucket == 0), only the percentage term is active.
+For **TPEG**, `dnp` is a point interval (`lb == ub`) because TPEG encodes DNP at
+full precision. The tolerance term `δ` is still applied so that map divergence between
+the encoding map and the decoding map does not cause every TPEG reference to fail.
+
+The `dnp_tolerance_pct` (δ) is the sole tolerance term — it captures map divergence
+that accumulates with path length. It is **not** a substitute for the v3 encoding
+bucket; the bucket width already captures the v3 quantisation uncertainty and is part
+of `dnp` itself.
 
 ---
 

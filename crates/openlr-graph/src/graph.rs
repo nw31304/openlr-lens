@@ -88,6 +88,10 @@ impl Graph {
     ) -> Vec<(NodeId, SegmentId, f64)> {
         let mut result = Vec::new();
         for &seg_id in self.outgoing.get(&node).into_iter().flatten() {
+            // U-turns are illegal: never re-enter the segment we just departed from.
+            if seg_id == incoming_seg {
+                continue;
+            }
             let seg = match self.segments.get(&seg_id) {
                 Some(s) => s,
                 None => continue,

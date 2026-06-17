@@ -8,3 +8,7 @@ openlr-codec  = { path = "../openlr-codec" }
 openlr-graph  = { path = "../openlr-graph" }
 serde.workspace     = true
 thiserror.workspace = true
+
+[dev-dependencies]
+flate2 = "1"
+openlr-provider = { path = "../openlr-provider" }

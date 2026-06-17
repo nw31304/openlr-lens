@@ -1,4 +1,4 @@
-use openlr_codec::interval::{CircularInterval, LinearInterval};
+use openlr_codec::interval::LinearInterval;
 use openlr_graph::{NodeId, SegmentId};
 
 /// Controls how much detail is recorded during a decode.
@@ -18,7 +18,7 @@ pub enum TraceLevel {
 /// Data derived by projecting an LRP coordinate onto a segment.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectionResult {
-    /// Arc-length from segment start to projected point, meters.
+    /// Arc-length from segment entry to projected point (after endpoint snapping), meters.
     pub arc_offset_m: f64,
     /// Projected point (lon, lat).
     pub point: (f64, f64),
@@ -26,21 +26,31 @@ pub struct ProjectionResult {
     pub distance_m: f64,
     /// Bearing computed over the 20 m window at this arc position (degrees).
     pub bearing_deg: f64,
+    /// True when the projection was snapped to the segment's entry endpoint.
+    pub is_at_entry: bool,
+    /// True when the projection was snapped to the segment's exit endpoint.
+    pub is_at_exit: bool,
 }
 
-/// Additive, decomposable score for one candidate.
-/// Lower is better; 0 in each component means "inside the encoding interval".
+/// Additive, decomposable score for one candidate.  Lower is better; 0.0 = perfect match.
+///
+/// `total = distance_score + bearing_score + frc_score + fow_score
+///        + interior_score + wrong_endpoint_score`
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CandidateScore {
-    /// Distance from LRP coordinate to projected point (always ≥ 0).
-    pub positional_m: f64,
-    /// Angular excess outside `[bearing_lb − τ, bearing_ub + τ]`; 0 if inside.
-    pub bearing_excess_deg: f64,
-    /// FRC mismatch penalty (soft ranking; 0 if FRC matches).
-    pub frc_penalty: f64,
-    /// FOW mismatch penalty (soft ranking; 0 if FOW matches).
-    pub fow_penalty: f64,
-    /// Sum of the above components (what the ranker sorts on).
+    /// `distance_weight × (distance_m / search_radius_m)`.
+    pub distance_score: f64,
+    /// `bearing_weight × (bucket_delta × bearing_penalty_per_bucket)`.
+    pub bearing_score: f64,
+    /// `frc_weight × frc_penalty_table[lrp_frc][seg_frc]`.
+    pub frc_score: f64,
+    /// `fow_weight × fow_penalty_table[lrp_fow][seg_fow]`.
+    pub fow_score: f64,
+    /// `interior_weight × 1.0` when the LRP snapped to an interior point; 0 at endpoints.
+    pub interior_score: f64,
+    /// `wrong_endpoint_weight × position_along_segment` (0 at correct end, 1 at wrong end).
+    pub wrong_endpoint_score: f64,
+    /// Sum of all components (what the ranker sorts on).
     pub total: f64,
 }
 
@@ -73,7 +83,7 @@ pub struct ScoredCandidate {
 pub enum GateVerdict {
     Pass,
     FailRadius { distance_m: f64, radius_m: f64 },
-    FailBearing { bearing_deg: f64, widened: CircularInterval },
+    /// Segment geometry was degenerate (fewer than 2 vertices).
     FailDirection,
 }
 

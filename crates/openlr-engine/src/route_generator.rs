@@ -105,10 +105,13 @@ mod tests {
             projection: ProjectionResult {
                 arc_offset_m: 0.0, point: (0.0, 0.0),
                 distance_m: score, bearing_deg: 0.0,
+                is_at_entry: true, is_at_exit: false,
             },
             score: CandidateScore {
-                positional_m: score, bearing_excess_deg: 0.0,
-                frc_penalty: 0.0, fow_penalty: 0.0, total: score,
+                distance_score: score, bearing_score: 0.0,
+                frc_score: 0.0, fow_score: 0.0,
+                interior_score: 0.0, wrong_endpoint_score: 0.0,
+                total: score,
             },
             entry_node: NodeId(0),
             exit_node:  NodeId(1),

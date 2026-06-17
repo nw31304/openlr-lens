@@ -1,0 +1,707 @@
+import React, { useEffect, useRef, useState } from 'react';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { PMTiles } from 'pmtiles';
+import { useStore, getSegmentId, getSegGeomCache, getSegIdToTile, getTileGeomCache } from '../store.js';
+
+const PATH_FRC_NAME = ['Motorway', 'Trunk/Primary', 'Secondary', 'Tertiary', 'Unclassified', 'Residential', 'Svc/Living St', 'Other'];
+const PATH_FOW_NAME = ['Undefined', 'Motorway', 'Dual C/W', 'Single C/W', 'Roundabout', 'Traffic Sq', 'Slip Road', 'Other'];
+
+function popupStyle(anchor, w = 260, h = 200) {
+  if (!anchor) return undefined;
+  const margin = 12;
+  let left = anchor.x + margin;
+  let top  = anchor.y + margin;
+  if (left + w > window.innerWidth  - margin) left = anchor.x - w - margin;
+  if (top  + h > window.innerHeight - margin) top  = anchor.y - h - margin;
+  return { position: 'absolute', left: Math.max(margin, left), top: Math.max(margin, top), right: 'auto', bottom: 'auto' };
+}
+import { decodeTile } from '../tileDecoder.js';
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const TILE_ZOOM = 12;
+const MIN_LOAD_ZOOM = 10;
+
+const FRC_COLOR = ['#e8002d', '#ff7700', '#e8c800', '#00aa44',
+                   '#00aaff', '#0055ff', '#aa00ff', '#888888'];
+const FRC_LABEL = ['0 · Motorway', '1 · Trunk/Primary', '2 · Secondary', '3 · Tertiary',
+                   '4 · Unclassified', '5 · Residential', '6 · Svc/Living St', '7 · Other'];
+const FRC_WIDTH = [4, 3, 2.5, 2, 1.5, 1.5, 1.2, 1];
+
+// ── Slippy tile helpers ────────────────────────────────────────────────────────
+
+function lngLatToTile(lng, lat, z) {
+  const n = 2 ** z;
+  const latRad = lat * Math.PI / 180;
+  const x = Math.floor((lng + 180) / 360 * n);
+  const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
+  return [Math.max(0, Math.min(n - 1, x)), Math.max(0, Math.min(n - 1, y))];
+}
+
+function tilesForBounds(bounds, z) {
+  const [x0, y0] = lngLatToTile(bounds.getWest(),  bounds.getNorth(), z);
+  const [x1, y1] = lngLatToTile(bounds.getEast(),  bounds.getSouth(), z);
+  const tiles = [];
+  for (let x = x0; x <= x1; x++)
+    for (let y = y0; y <= y1; y++)
+      tiles.push({ z, x, y });
+  return tiles;
+}
+
+// ── LRP bearing helper ─────────────────────────────────────────────────────────
+
+function formatBearing(lb, ub) {
+  if (Math.abs(ub - lb) < 0.1) return `${lb.toFixed(1)}°`;
+  return `${lb.toFixed(1)}° – ${ub.toFixed(1)}°`;
+}
+
+// ── Map Component ──────────────────────────────────────────────────────────────
+
+export default function MapView({ tilesBase, ready }) {
+  const mapContainer = useRef(null);
+  const mapRef = useRef(null);
+  const tileCacheRef = useRef(new Map());
+  const pendingCountRef = useRef(0);
+  const pmtilesRef = useRef(null);
+  const pulseRef   = useRef(null);
+
+  const [status, setStatus] = useState(null);
+  const [infoProps, setInfoProps] = useState(null);
+  const [infoAnchor, setInfoAnchor] = useState(null);
+  const [lrpInfo, setLrpInfo] = useState(null);
+
+  const decodeResult          = useStore(s => s.decodeResult);
+  const highlightedSegment    = useStore(s => s.highlightedSegment);
+  const setHighlightedSegment = useStore(s => s.setHighlightedSegment);
+  const traceHighlightSegIds  = useStore(s => s.traceHighlightSegIds);
+  const traceLrpFocus         = useStore(s => s.traceLrpFocus);
+  const setTraceLrpFocus      = useStore(s => s.setTraceLrpFocus);
+  const showSegmentLayer      = useStore(s => s.showSegmentLayer);
+
+  // Always-current ref so the highlight effect can read decodeResult without
+  // adding it to the dependency array (which would cause both effects to race).
+  const decodeResultRef = useRef(decodeResult);
+  useEffect(() => { decodeResultRef.current = decodeResult; }, [decodeResult]);
+
+  // Store tilesBase in a ref so the loadVisibleTiles callback can see the latest value
+  const tilesBaseRef = useRef(tilesBase);
+  useEffect(() => { tilesBaseRef.current = tilesBase; }, [tilesBase]);
+
+  // ── Init map ────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (mapRef.current) return; // already initialized
+
+    const map = new maplibregl.Map({
+      container: mapContainer.current,
+      style:     'https://tiles.openfreemap.org/styles/liberty',
+      center:    [10, 48],
+      zoom:      4,
+      hash:      true,
+    });
+    mapRef.current = map;
+
+    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+
+    map.on('load', () => {
+      // ── OLR segment source ────────────────────────────────────────────────
+      map.addSource('olr-segments', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+
+      for (let frc = 0; frc < 8; frc++) {
+        map.addLayer({
+          id:     `olr-frc${frc}`,
+          type:   'line',
+          source: 'olr-segments',
+          filter: ['==', ['get', 'frc'], frc],
+          layout: { visibility: 'none' }, // hidden until user enables Segments layer
+          paint: {
+            'line-color': FRC_COLOR[frc],
+            'line-width': ['interpolate', ['linear'], ['zoom'], 10, FRC_WIDTH[frc] * 2.0, 16, FRC_WIDTH[frc] * 5.5],
+            'line-opacity': 0.9,
+          },
+        });
+      }
+
+      // Highlight layer — activated on click or result-panel selection
+      map.addLayer({
+        id:     'olr-highlight',
+        type:   'line',
+        source: 'olr-segments',
+        filter: ['boolean', false],
+        layout: { visibility: 'none' }, // follows segment layer visibility
+        paint: {
+          'line-color':   '#ffe000',
+          'line-width':   6,
+          'line-opacity': 1,
+        },
+      });
+
+      // ── Decoded path source + layer ───────────────────────────────────────
+      map.addSource('decoded-path', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+
+      map.addLayer({
+        id:     'decoded-path-line',
+        type:   'line',
+        source: 'decoded-path',
+        paint: {
+          'line-color':   '#00d4ff',
+          'line-width':   5,
+          'line-opacity': 0.9,
+        },
+      });
+
+      // ── LRP marker source + layer ─────────────────────────────────────────
+      map.addSource('lrp-markers', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+
+      map.addLayer({
+        id:     'lrp-markers-circle',
+        type:   'circle',
+        source: 'lrp-markers',
+        paint: {
+          'circle-radius':       7,
+          'circle-color':        '#aa00ff',
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#ffffff',
+        },
+      });
+
+      // ── Highlighted segment (sits above everything else) ──────────────────
+      map.addSource('highlighted-segment', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+
+      map.addLayer({
+        id:     'highlighted-segment-halo',
+        type:   'line',
+        source: 'highlighted-segment',
+        paint: {
+          'line-color':   '#ffffff',
+          'line-width':   14,
+          'line-opacity': 0.6,
+        },
+      });
+
+      map.addLayer({
+        id:     'highlighted-segment-line',
+        type:   'line',
+        source: 'highlighted-segment',
+        paint: {
+          'line-color':   '#ffe000',
+          'line-width':   6,
+          'line-opacity': 1,
+        },
+      });
+
+      // ── Trace-panel highlight (separate from result-panel highlight) ───────
+      map.addSource('trace-segment', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      map.addLayer({
+        id:     'trace-segment-halo',
+        type:   'line',
+        source: 'trace-segment',
+        paint: {
+          'line-color':   '#ff8c00',
+          'line-width':   14,
+          'line-opacity': 0.4,
+          'line-blur':    3,
+        },
+      });
+      map.addLayer({
+        id:     'trace-segment-line',
+        type:   'line',
+        source: 'trace-segment',
+        paint: {
+          'line-color':   '#ff8c00',
+          'line-width':   4,
+          'line-opacity': 1,
+        },
+      });
+
+      // ── Click handlers ────────────────────────────────────────────────────
+      for (let frc = 0; frc < 8; frc++) {
+        map.on('click', `olr-frc${frc}`, onSegmentClick);
+        map.on('mouseenter', `olr-frc${frc}`, () => map.getCanvas().style.cursor = 'pointer');
+        map.on('mouseleave', `olr-frc${frc}`, () => map.getCanvas().style.cursor = '');
+      }
+
+      map.on('click', 'lrp-markers-circle', onLrpClick);
+      map.on('mouseenter', 'lrp-markers-circle', () => map.getCanvas().style.cursor = 'pointer');
+      map.on('mouseleave', 'lrp-markers-circle', () => map.getCanvas().style.cursor = '');
+
+      map.on('click', 'decoded-path-line', onDecodedPathClick);
+      map.on('mouseenter', 'decoded-path-line', () => map.getCanvas().style.cursor = 'pointer');
+      map.on('mouseleave', 'decoded-path-line', () => map.getCanvas().style.cursor = '');
+
+      map.on('click', onMapClick);
+
+      loadVisibleTiles(map);
+    });
+
+    map.on('moveend', () => loadVisibleTiles(map));
+    map.on('zoomend', () => loadVisibleTiles(map));
+
+    return () => {
+      if (pulseRef.current) { cancelAnimationFrame(pulseRef.current); pulseRef.current = null; }
+      map.remove();
+      mapRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Tile loading ─────────────────────────────────────────────────────────────
+
+  async function loadVisibleTiles(map) {
+    if (!map.isStyleLoaded()) return;
+    const zoom = map.getZoom();
+    if (zoom < MIN_LOAD_ZOOM) {
+      setStatus(`Zoom in past ${MIN_LOAD_ZOOM} to load road segments`);
+      return;
+    }
+    setStatus(null);
+
+    // Ensure we have a PMTiles reader for the tile inspector.
+    // We create a separate reader here (the decoder in store.js uses its own instance).
+    // Both instances share the same underlying HTTP cache via the browser.
+    if (!pmtilesRef.current) {
+      try {
+        const manifest = await fetch(`${tilesBaseRef.current}/manifest.json`).then(r => r.json());
+        pmtilesRef.current = new PMTiles(`${tilesBaseRef.current}/${manifest.archive}`);
+      } catch {
+        return;
+      }
+    }
+
+    const tileCache = tileCacheRef.current;
+    const tiles   = tilesForBounds(map.getBounds(), TILE_ZOOM);
+    const missing = tiles.filter(({ z, x, y }) => !tileCache.has(`${z}/${x}/${y}`));
+    if (missing.length === 0) { rebuildSource(map, tiles); return; }
+
+    pendingCountRef.current += missing.length;
+    setStatus(`Loading ${pendingCountRef.current} tile${pendingCountRef.current > 1 ? 's' : ''}…`);
+
+    await Promise.all(missing.map(async ({ z, x, y }) => {
+      const key = `${z}/${x}/${y}`;
+      try {
+        const result = await pmtilesRef.current.getZxy(z, x, y);
+        if (result?.data) {
+          const fc = decodeTile(result.data, z, x, y);
+          tileCache.set(key, fc.features);
+        } else {
+          tileCache.set(key, []);
+        }
+      } catch (e) {
+        console.error(`Tile ${key} failed:`, e);
+        tileCache.set(key, []);
+      } finally {
+        pendingCountRef.current = Math.max(0, pendingCountRef.current - 1);
+        if (pendingCountRef.current === 0) setStatus(null);
+      }
+    }));
+
+    rebuildSource(map, tiles);
+  }
+
+  function rebuildSource(map, visibleTiles) {
+    if (!map.getSource('olr-segments')) return;
+    const visibleKeys = new Set(visibleTiles.map(({ z, x, y }) => `${z}/${x}/${y}`));
+    const features = [];
+    for (const [key, feats] of tileCacheRef.current) {
+      if (visibleKeys.has(key)) features.push(...feats);
+    }
+    map.getSource('olr-segments').setData({ type: 'FeatureCollection', features });
+  }
+
+  // ── Click interaction ────────────────────────────────────────────────────────
+
+  function onSegmentClick(e) {
+    if (!e.features?.length) return;
+    const props = e.features[0].properties;
+    const [z, x, y] = props.tile.split('/').map(Number);
+    const segId = getSegmentId(z, x, y, props.local_index);
+    setHighlightedSegment({ tile: props.tile, local_index: props.local_index });
+    setInfoProps({ ...props, segment_id: segId >= 0 ? segId : null });
+    setInfoAnchor({ x: e.point.x, y: e.point.y });
+    setLrpInfo(null);
+    e.originalEvent.stopPropagation();
+  }
+
+  function onDecodedPathClick(e) {
+    if (!e.features?.length) return;
+    const props = e.features[0].properties;
+    setHighlightedSegment({ tile: props.tile, local_index: props.local_index });
+    setInfoProps(props);
+    setInfoAnchor({ x: e.point.x, y: e.point.y });
+    setLrpInfo(null);
+    e.originalEvent.stopPropagation();
+  }
+
+  function onLrpClick(e) {
+    if (!e.features?.length) return;
+    setLrpInfo(e.features[0].properties);
+    setInfoAnchor({ x: e.point.x, y: e.point.y });
+    setInfoProps(null);
+    setHighlightedSegment(null);
+    e.originalEvent.stopPropagation();
+  }
+
+  function onMapClick(e) {
+    const layerIds = [...Array.from({ length: 8 }, (_, i) => `olr-frc${i}`), 'lrp-markers-circle', 'decoded-path-line'];
+    const hits = mapRef.current.queryRenderedFeatures(e.point, { layers: layerIds });
+    if (hits.length > 0) return;
+    setHighlightedSegment(null);
+    setInfoProps(null);
+    setInfoAnchor(null);
+    setLrpInfo(null);
+  }
+
+  // ── Highlight sync (store → map) ────────────────────────────────────────────
+  // Depends only on highlightedSegment; reads decodeResult via ref so it never
+  // races with the decode-result effect.
+
+  useEffect(() => {
+    const map = mapRef.current;
+
+    if (pulseRef.current) { cancelAnimationFrame(pulseRef.current); pulseRef.current = null; }
+
+    if (!map) return;
+
+    const clearHighlight = () => {
+      const src = map.getSource('highlighted-segment');
+      if (src) src.setData({ type: 'FeatureCollection', features: [] });
+      if (!traceHighlightSegIds?.length) {
+        if (map.getLayer('olr-highlight')) map.setFilter('olr-highlight', ['boolean', false]);
+      }
+    };
+
+    if (!highlightedSegment) { clearHighlight(); return; }
+
+    // Look up geometry from the always-current ref (no dep needed)
+    const seg = decodeResultRef.current?.segments?.find(
+      s => s.tile === highlightedSegment.tile && s.local_index === highlightedSegment.local_index
+    );
+
+    if (seg?.geometry?.length >= 2) {
+      const src = map.getSource('highlighted-segment');
+      if (src) src.setData({
+        type: 'FeatureCollection',
+        features: [{ type: 'Feature', geometry: { type: 'LineString', coordinates: seg.geometry }, properties: {} }],
+      });
+      // Only clear tile-layer filter when trace panel isn't using it
+      if (!traceHighlightSegIds?.length) {
+        if (map.getLayer('olr-highlight')) map.setFilter('olr-highlight', ['boolean', false]);
+      }
+
+      // Fit map to the clicked segment's extent
+      const lngs = seg.geometry.map(c => c[0]);
+      const lats = seg.geometry.map(c => c[1]);
+      map.fitBounds(
+        [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+        { padding: 160, duration: 400, maxZoom: 18 },
+      );
+
+      // Sinusoidal halo pulse
+      const t0 = performance.now();
+      const pulse = (now) => {
+        if (!map.getLayer('highlighted-segment-halo')) return;
+        const phase = ((now - t0) / 700) * Math.PI * 2;
+        map.setPaintProperty('highlighted-segment-halo', 'line-opacity',
+          0.25 + 0.5 * (0.5 + 0.5 * Math.sin(phase)));
+        pulseRef.current = requestAnimationFrame(pulse);
+      };
+      pulseRef.current = requestAnimationFrame(pulse);
+    } else {
+      // Background segment click — olr-highlight filter (skip if trace panel owns the filter)
+      const src = map.getSource('highlighted-segment');
+      if (src) src.setData({ type: 'FeatureCollection', features: [] });
+      if (!traceHighlightSegIds?.length && map.getLayer('olr-highlight')) {
+        map.setFilter('olr-highlight', ['all',
+          ['==', ['get', 'tile'],        highlightedSegment.tile],
+          ['==', ['get', 'local_index'], highlightedSegment.local_index],
+        ]);
+      }
+    }
+  }, [highlightedSegment, traceHighlightSegIds]); // ← decodeResult excluded; read via ref
+
+  // ── Trace highlight sync (trace panel → dedicated trace-segment layer) ───────
+  // Uses the decode-time geometry cache so highlights work regardless of
+  // whether those tiles are currently loaded in the display cache.
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const traceSource = map.getSource('trace-segment');
+    if (!traceSource) return;
+
+    if (!traceHighlightSegIds?.length) {
+      traceSource.setData({ type: 'FeatureCollection', features: [] });
+      return;
+    }
+
+    const segGeomCache  = getSegGeomCache();
+    const segIdToTile   = getSegIdToTile();
+    const tileGeomCache = getTileGeomCache();
+    const features      = [];
+    const allCoords     = [];
+
+    for (const segId of traceHighlightSegIds) {
+      // Primary: direct segId → feature lookup (built at decode time)
+      let feat = segGeomCache.get(segId);
+
+      // Fallback: two-step lookup via segIdToTile + tileGeomCache
+      if (!feat) {
+        const mapping = segIdToTile.get(segId);
+        if (mapping) {
+          feat = tileGeomCache.get(mapping.tile_key)?.find(f => f.properties.local_index === mapping.local_index);
+          if (feat) console.log('[trace-hl] two-step fallback hit segId', segId, 'mapping:', mapping);
+        }
+        if (!feat) {
+          console.warn('[trace-hl] segId', segId, 'not found.',
+            'segGeomCache.size:', segGeomCache.size,
+            'mapping:', mapping,
+            'tileKeys in tileGeomCache:', [...tileGeomCache.keys()].slice(0, 5));
+          continue;
+        }
+      }
+      features.push(feat);
+      if (feat.geometry?.coordinates) allCoords.push(...feat.geometry.coordinates);
+    }
+
+    traceSource.setData({ type: 'FeatureCollection', features });
+
+    // Pan to the bounding box of the highlighted segments
+    if (allCoords.length >= 2) {
+      const lngs = allCoords.map(c => c[0]);
+      const lats = allCoords.map(c => c[1]);
+      map.fitBounds(
+        [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+        { padding: 160, duration: 400, maxZoom: 18 },
+      );
+    }
+
+    // Show segment info popup for single-segment trace clicks
+    if (features.length === 1) {
+      setInfoProps({ ...features[0].properties });
+      const coords = features[0].geometry?.coordinates;
+      if (coords?.length) {
+        const mid = coords[Math.floor(coords.length / 2)];
+        const pixel = map.project(mid);
+        setInfoAnchor({ x: pixel.x, y: pixel.y });
+      }
+    }
+  }, [traceHighlightSegIds]);
+
+  // ── Trace panel LRP focus (pan + popup) ─────────────────────────────────────
+
+  useEffect(() => {
+    if (!traceLrpFocus) return;
+    const map = mapRef.current;
+    if (!map) return;
+
+    const { lon, lat, index, frc, fow, lfrcnp, bearing_lb, bearing_ub } = traceLrpFocus;
+    map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 15), duration: 500 });
+    setLrpInfo({ index, lat, lon, frc, fow, lfrcnp: lfrcnp ?? null, bearing_lb, bearing_ub });
+    setInfoProps(null);
+    // Position popup near map center (LRP will fly there)
+    setInfoAnchor({ x: map.getCanvas().clientWidth / 2, y: map.getCanvas().clientHeight / 2 });
+    // Allow re-clicking same LRP by clearing after acting
+    setTraceLrpFocus(null);
+  }, [traceLrpFocus, setTraceLrpFocus]);
+
+  // ── Segment layer visibility toggle ──────────────────────────────────────────
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const vis = showSegmentLayer ? 'visible' : 'none';
+    for (let frc = 0; frc < 8; frc++) {
+      if (map.getLayer(`olr-frc${frc}`)) map.setLayoutProperty(`olr-frc${frc}`, 'visibility', vis);
+    }
+    if (map.getLayer('olr-highlight')) map.setLayoutProperty('olr-highlight', 'visibility', vis);
+  }, [showSegmentLayer]);
+
+  // ── Decode result → map layers + camera ─────────────────────────────────────
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const pathSource = map.getSource('decoded-path');
+    const lrpSource  = map.getSource('lrp-markers');
+
+    if (!decodeResult) {
+      pathSource?.setData({ type: 'FeatureCollection', features: [] });
+      lrpSource?.setData({ type: 'FeatureCollection', features: [] });
+      setInfoProps(null);
+      setInfoAnchor(null);
+      setLrpInfo(null);
+      return;
+    }
+
+    // ── LRP markers (success and failure) ────────────────────────────────────
+    const lrps = decodeResult.lrps ?? [];
+    lrpSource?.setData({
+      type: 'FeatureCollection',
+      features: lrps.map((lrp, idx) => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [lrp.lon, lrp.lat] },
+        properties: {
+          index: idx, lat: lrp.lat, lon: lrp.lon,
+          frc: lrp.frc, fow: lrp.fow,
+          lfrcnp: lrp.lfrcnp ?? null,
+          bearing_lb: lrp.bearing_lb, bearing_ub: lrp.bearing_ub,
+        },
+      })),
+    });
+
+    // ── Decoded path — per-segment features so each segment is clickable ─────
+    // Merge SegmentInfo (geometry, ids) with tile-cache properties (direction, length_m)
+    const segGeomCache = getSegGeomCache();
+    const pathFeatures = (decodeResult.ok && decodeResult.segments?.length)
+      ? decodeResult.segments
+          .filter(s => s.geometry?.length >= 2)
+          .map(s => {
+            const cached = segGeomCache.get(s.segment_id)?.properties ?? {};
+            return {
+              type: 'Feature',
+              geometry: { type: 'LineString', coordinates: s.geometry },
+              properties: {
+                tile:        s.tile,
+                local_index: s.local_index,
+                frc:         s.frc,
+                frc_name:    cached.frc_name ?? PATH_FRC_NAME[s.frc] ?? String(s.frc),
+                fow:         s.fow,
+                fow_name:    cached.fow_name ?? PATH_FOW_NAME[s.fow] ?? String(s.fow),
+                direction:   cached.direction ?? '—',
+                length_m:    cached.length_m ?? '—',
+                osm_way_id:  s.osm_way_id ?? cached.osm_way_id ?? null,
+                segment_id:  s.segment_id ?? null,
+              },
+            };
+          })
+      : [];
+    pathSource?.setData({ type: 'FeatureCollection', features: pathFeatures });
+
+    // ── Fit camera — prefer path coords, fall back to LRP coords ─────────────
+    const fitCoords = pathFeatures.length
+      ? pathFeatures.flatMap(f => f.geometry.coordinates)
+      : lrps.map(l => [l.lon, l.lat]);
+
+    if (fitCoords.length > 0) {
+      const lngs = fitCoords.map(c => c[0]);
+      const lats = fitCoords.map(c => c[1]);
+      const bounds = [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]];
+      const doFit = () => map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 17 });
+      // Defer one frame so MapLibre has processed the setData calls first
+      requestAnimationFrame(doFit);
+    }
+  }, [decodeResult]);
+
+  // ── Render ───────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="map-wrap">
+      <div ref={mapContainer} className="map-container" />
+
+      {/* Status overlay */}
+      {status && <div className="map-status">{status}</div>}
+
+      {/* Segment info panel */}
+      {infoProps && (
+        <div className="seg-info-panel" style={popupStyle(infoAnchor)}>
+          <header className="seg-info-header">
+            <span>
+              Segment{' '}
+              {infoProps.osm_way_id != null
+                ? <a href={`https://www.openstreetmap.org/way/${infoProps.osm_way_id}`} target="_blank" rel="noreferrer">{infoProps.osm_way_id}</a>
+                : null}
+            </span>
+            <button
+              className="seg-info-close"
+              onClick={() => {
+                setHighlightedSegment(null);
+                setInfoProps(null);
+                setInfoAnchor(null);
+              }}
+            >
+              ✕
+            </button>
+          </header>
+          <div className="seg-info-body">
+            <table>
+              <tbody>
+                {[
+                  ['FRC',       `${infoProps.frc} — ${infoProps.frc_name}`],
+                  ['FOW',       `${infoProps.fow} — ${infoProps.fow_name}`],
+                  ['Direction', infoProps.direction],
+                  ['Length',    `${infoProps.length_m} m`],
+                  ['Tile',      infoProps.tile],
+                  ['Index',     infoProps.local_index],
+                  ['Seg ID',    infoProps.segment_id != null ? infoProps.segment_id : '— (decode first)'],
+                ].map(([k, v]) => (
+                  <tr key={k}>
+                    <td className="seg-info-key">{k}</td>
+                    <td><b>{v}</b></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* LRP info panel */}
+      {lrpInfo && (
+        <div className="seg-info-panel" style={popupStyle(infoAnchor)}>
+          <header className="seg-info-header">
+            <span>LRP {lrpInfo.index + 1}</span>
+            <button className="seg-info-close" onClick={() => { setLrpInfo(null); setInfoAnchor(null); }}>✕</button>
+          </header>
+          <div className="seg-info-body">
+            <table>
+              <tbody>
+                {[
+                  ['Lat',     lrpInfo.lat.toFixed(6)],
+                  ['Lon',     lrpInfo.lon.toFixed(6)],
+                  ['FRC',     lrpInfo.frc],
+                  ['FOW',     lrpInfo.fow],
+                  ['LFRCNP',  lrpInfo.lfrcnp !== null ? lrpInfo.lfrcnp : '— (last LRP)'],
+                  ['Bearing', formatBearing(lrpInfo.bearing_lb, lrpInfo.bearing_ub)],
+                ].map(([k, v]) => (
+                  <tr key={k}>
+                    <td className="seg-info-key">{k}</td>
+                    <td><b>{v}</b></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* FRC Legend */}
+      <div className="frc-legend">
+        <h4>FRC</h4>
+        {FRC_LABEL.map((label, i) => (
+          <div key={i} className="legend-row">
+            <div className="legend-swatch" style={{ background: FRC_COLOR[i] }} />
+            <span>{label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

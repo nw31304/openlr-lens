@@ -44,6 +44,8 @@ pub struct TileLoader {
     boundary_nodes: HashMap<[u8; 16], NodeId>,
     next_node_id: u32,
     next_seg_id: u32,
+    /// Maps each SegmentId → (tile_z, tile_x, tile_y, local_segment_index_within_tile).
+    pub seg_tile: HashMap<SegmentId, (u8, u32, u32, u32)>,
 }
 
 impl Default for TileLoader {
@@ -57,6 +59,7 @@ impl TileLoader {
             boundary_nodes: HashMap::new(),
             next_node_id: 0,
             next_seg_id: 0,
+            seg_tile: HashMap::new(),
         }
     }
 
@@ -69,6 +72,17 @@ impl TileLoader {
             &mut self.next_node_id,
             &mut self.next_seg_id,
         )
+    }
+
+    /// Like `load_tile`, but also records the tile key and local index for each
+    /// ingested segment so callers can map a `SegmentId` back to its tile origin.
+    pub fn load_tile_at(&mut self, z: u8, x: u32, y: u32, bytes: &[u8]) -> Result<(), TileReadError> {
+        let first_seg = self.next_seg_id;
+        self.load_tile(bytes)?;
+        for local_idx in 0..(self.next_seg_id - first_seg) {
+            self.seg_tile.insert(SegmentId(first_seg + local_idx), (z, x, y, local_idx));
+        }
+        Ok(())
     }
 }
 

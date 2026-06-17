@@ -3,13 +3,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite"
+    "dev": "vite",
+    "build": "vite build"
   },
   "dependencies": {
     "maplibre-gl": "^4",
-    "pmtiles": "^3"
+    "pmtiles": "^3",
+    "react": "^18",
+    "react-dom": "^18",
+    "zustand": "^4"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^4",
     "vite": "^5"
   },
   "allowScripts": {

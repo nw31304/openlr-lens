@@ -156,6 +156,12 @@ pub fn decode_tpeg_hex(s: &str) -> Result<LocationReference, DecodeError> {
     decode_tpeg(&bytes)
 }
 
+pub fn decode_tpeg_base64(s: &str) -> Result<LocationReference, DecodeError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let bytes = B64.decode(s).map_err(|e| DecodeError::Base64(e.to_string()))?;
+    decode_tpeg(&bytes)
+}
+
 // ── Byte-level helpers ─────────────────────────────────────────────────────────
 
 /// AbsoluteGeoCoordinate (IntSi24, big-endian). Same formula as OpenLR v3 (both follow

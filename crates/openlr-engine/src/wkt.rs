@@ -1,4 +1,5 @@
 use openlr_graph::{Graph, NodeId, SegmentId, haversine_m, interpolate_at, polyline_length_m};
+use crate::trace::TraversalDir;
 
 /// Assemble a WKT `LINESTRING` from a decoded path, applying pos/neg offsets.
 ///
@@ -18,6 +19,8 @@ pub fn path_to_wkt(
     neg_offset_m: f64,
     first_lrp_arc_m: f64,
     last_lrp_arc_m: f64,
+    first_seg_traversal: TraversalDir,
+    _last_seg_traversal: TraversalDir,
     graph: &Graph,
 ) -> Option<String> {
     if path.is_empty() {
@@ -29,17 +32,16 @@ pub fn path_to_wkt(
     // Resolve all segments up front; bail if any is missing.
     let segs: Vec<_> = path.iter().map(|id| graph.segments.get(id)).collect::<Option<Vec<_>>>()?;
 
-    // Infer traversal direction (forward = stored order) for each segment from
-    // node-connectivity.  We walk the path left-to-right: seg[0]'s direction is
-    // determined by which of its endpoints it shares with seg[1]; subsequent
-    // segments are oriented so their entry node equals the exit node of the
-    // previous segment.
+    // Traversal direction per segment: Forward = stored geometry order.
+    // seg[0] uses the explicit traversal direction from candidate selection —
+    // the heuristic (comparing end_node with seg[1]'s endpoints) can fail when
+    // A* U-turns back through the departure segment, making seg[1] appear to
+    // share seg[0].end_node even though seg[0] is traversed Backward.
+    // Segments [1..n-1] are inferred from node-connectivity; A* guarantees they
+    // connect correctly, so the chain inference is sound for them.
     let mut forward = vec![true; n];
+    forward[0] = matches!(first_seg_traversal, TraversalDir::Forward);
     if n >= 2 {
-        let s0 = segs[0];
-        let s1 = segs[1];
-        forward[0] = s0.end_node == s1.start_node || s0.end_node == s1.end_node;
-
         for i in 1..n {
             let prev_exit: NodeId = if forward[i - 1] { segs[i - 1].end_node } else { segs[i - 1].start_node };
             forward[i] = segs[i].start_node == prev_exit;
@@ -176,6 +178,7 @@ fn segment_vertices(
 mod tests {
     use super::*;
     use openlr_graph::{Direction, Graph, NetworkNode, NetworkSegment, NodeId, SegmentId};
+        use crate::trace::TraversalDir;
 
     fn node(id: u32, lon: f64, lat: f64) -> NetworkNode {
         NetworkNode { id: NodeId(id), lon, lat, stable_id: [0; 16], is_boundary: false }
@@ -201,7 +204,7 @@ mod tests {
         let seg1_len = polyline_length_m(&[(0.0_f64, 0.0_f64), (0.001, 0.0)]);
         let seg2_len = polyline_length_m(&[(0.001_f64, 0.0_f64), (0.002, 0.0)]);
         // LRPs at nodes: first_lrp_arc = 0, last_lrp_arc = seg2_len.
-        let wkt = path_to_wkt(&[SegmentId(1), SegmentId(2)], 0.0, 0.0, 0.0, seg2_len, &g).unwrap();
+        let wkt = path_to_wkt(&[SegmentId(1), SegmentId(2)], 0.0, 0.0, 0.0, seg2_len, TraversalDir::Forward, TraversalDir::Forward, &g).unwrap();
         // start, junction (deduped), end → 3 points
         assert!(wkt.starts_with("LINESTRING ("), "{wkt}");
         let n_pts = wkt.split(',').count();
@@ -219,7 +222,7 @@ mod tests {
         let len = polyline_length_m(&[(0.0_f64, 0.0_f64), (0.01, 0.0)]);
         // Trim the first 20 % from the start.  LRP at node 0 (arc = 0), last LRP at node 1 (arc = len).
         let offset = len * 0.2;
-        let wkt = path_to_wkt(&[SegmentId(1)], offset, 0.0, 0.0, len, &g).unwrap();
+        let wkt = path_to_wkt(&[SegmentId(1)], offset, 0.0, 0.0, len, TraversalDir::Forward, TraversalDir::Forward, &g).unwrap();
         // The start point should be offset from (0,0).
         assert!(!wkt.contains("0.0000000 0.0000000"), "start should be trimmed: {wkt}");
     }
@@ -227,6 +230,6 @@ mod tests {
     #[test]
     fn empty_path_returns_none() {
         let g = Graph::new();
-        assert!(path_to_wkt(&[], 0.0, 0.0, 0.0, 0.0, &g).is_none());
+        assert!(path_to_wkt(&[], 0.0, 0.0, 0.0, 0.0, TraversalDir::Forward, TraversalDir::Forward, &g).is_none());
     }
 }

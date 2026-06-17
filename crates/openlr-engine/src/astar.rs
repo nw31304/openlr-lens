@@ -235,8 +235,8 @@ mod tests {
         ScoredCandidate {
             segment_id: SegmentId(seg_id),
             traversal: TraversalDir::Forward,
-            projection: ProjectionResult { arc_offset_m: 0.0, point: (0.0,0.0), distance_m: 5.0, bearing_deg: 90.0 },
-            score: CandidateScore { positional_m: 5.0, bearing_excess_deg: 0.0, frc_penalty: 0.0, fow_penalty: 0.0, total: 5.0 },
+            projection: ProjectionResult { arc_offset_m: 0.0, point: (0.0,0.0), distance_m: 5.0, bearing_deg: 90.0, is_at_entry: true, is_at_exit: false },
+            score: CandidateScore { distance_score: 5.0, bearing_score: 0.0, frc_score: 0.0, fow_score: 0.0, interior_score: 0.0, wrong_endpoint_score: 0.0, total: 5.0 },
             entry_node: NodeId(entry),
             exit_node: NodeId(exit),
         }

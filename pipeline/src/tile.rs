@@ -288,6 +288,10 @@ fn gzip_compress(data: &[u8]) -> Result<Vec<u8>> {
 /// ~306 leaf directories — still trivially within a single root.
 const ENTRIES_PER_LEAF: usize = 16_384;
 
+/// PMTiles v3 spec: root directory MUST fit within the first 16 384 bytes of the
+/// archive.  Header is 127 bytes, leaving 16 257 bytes for the compressed root.
+const MAX_ROOT_COMPRESSED_BYTES: usize = 16_384 - 127;
+
 struct DirectoryParts {
     root_compressed: Vec<u8>,
     leaf_dirs_data: Vec<u8>, // compressed leaf directories concatenated
@@ -296,9 +300,8 @@ struct DirectoryParts {
 
 /// Build the PMTiles v3 directory structure.
 ///
-/// - ≤ `ENTRIES_PER_LEAF` tiles: flat root directory (no leaf dirs).
-/// - > `ENTRIES_PER_LEAF` tiles: 2-level hierarchy.  Each leaf dir holds up to
-///   `ENTRIES_PER_LEAF` tile entries; the root holds one leaf pointer per leaf dir.
+/// Tries a flat root first; falls back to a 2-level hierarchy if the compressed
+/// root would exceed the 16 384-byte PMTiles header window.
 ///
 /// 2 levels is sufficient for planet-scale at any zoom:
 ///   z12 world ~500k tiles → ~31 leaves; z15 world ~5M tiles → ~306 leaves.
@@ -306,18 +309,29 @@ fn build_directory(tile_entries: &[(u64, u64, u32)]) -> Result<DirectoryParts> {
     let n = tile_entries.len();
 
     if n <= ENTRIES_PER_LEAF {
-        // ── Flat ─────────────────────────────────────────────────────────────
+        // ── Try flat ─────────────────────────────────────────────────────────
         let entries: Vec<(u64, u64, u32, u32)> = tile_entries
             .iter()
             .map(|&(id, off, len)| (id, off, len, 1))
             .collect();
         let root_compressed = gzip_compress(&encode_directory(&entries))?;
-        Ok(DirectoryParts {
-            root_compressed,
-            leaf_dirs_data: Vec::new(),
-            n_tiles: n as u64,
-        })
-    } else {
+        if root_compressed.len() <= MAX_ROOT_COMPRESSED_BYTES {
+            return Ok(DirectoryParts {
+                root_compressed,
+                leaf_dirs_data: Vec::new(),
+                n_tiles: n as u64,
+            });
+        }
+        // Flat root exceeds the 16 384-byte window — fall through to 2-level.
+        tracing::debug!(
+            n,
+            compressed_bytes = root_compressed.len(),
+            limit = MAX_ROOT_COMPRESSED_BYTES,
+            "flat root directory too large; using leaf directories"
+        );
+    }
+
+    {
         // ── 2-level ───────────────────────────────────────────────────────────
         let mut leaf_dirs_data: Vec<u8> = Vec::new();
         let mut root_entries: Vec<(u64, u64, u32, u32)> = Vec::new();

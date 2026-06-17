@@ -22,7 +22,7 @@ use openlr_graph::{Graph, NodeId, SegmentId};
 use astar::find_route;
 use candidate::select_candidates;
 use route_generator::RouteGenerator as Gen;
-use trace::{DecodeTrace as Trace, ScoredCandidate};
+use trace::{DecodeTrace as Trace, ScoredCandidate, TraversalDir};
 use validation::{apply_offset, validate_dnp};
 
 // (exit_node, entry_node, effective_lfrcnp) → None (A* found no path) or Some((segs, interior_length_m))
@@ -47,6 +47,11 @@ pub struct DecodedLocation {
     /// Arc offset of the last LRP on the last path segment, in the traversal direction (m).
     /// Used as the reference point for `neg_offset_m`: `last_lrp_arc_m - neg_offset_m`.
     pub last_lrp_arc_m: f64,
+    /// Traversal direction of path[0] — needed by `path_to_wkt` to orient the first segment
+    /// without relying on node-connectivity heuristics that can fail when A* U-turns.
+    pub first_seg_traversal: TraversalDir,
+    /// Traversal direction of path[last] — symmetric counterpart for the last segment.
+    pub last_seg_traversal: TraversalDir,
     /// Trace of every decision made during this decode.
     /// `None` when `params.trace_level == TraceLevel::Off`.
     pub trace: Option<DecodeTrace>,
@@ -113,17 +118,73 @@ pub fn decode(
     let (path, winning_indices): (Vec<SegmentId>, Vec<usize>) = {
         let t = trace.get_or_insert_with(|| Trace::new(params.clone()));
         let mut route_cache: RouteCache = HashMap::new();
-        'search: {
-            for indices in Gen::new(&all_candidates) {
-                if let Some(p) = try_route_combination(
-                    &indices, &all_candidates, lrps, graph, params, t, &mut route_cache,
-                ) {
-                    break 'search (p, indices);
+
+        // Pre-check: for single-leg (2-LRP) references, try topologically simple
+        // combinations BEFORE the main RouteGenerator loop.  The RouteGenerator
+        // orders by per-LRP score, so a longer but higher-scoring combination can
+        // be accepted before the correct shorter one is ever tried.
+        //
+        // Two classes of topologically simple pairs (both guarded by a distance
+        // threshold so only genuinely nearby candidates qualify):
+        //
+        //   1. Same-segment: both LRPs project onto the same segment in the same
+        //      traversal direction with from-arc ≤ to-arc.  The path is a single
+        //      segment; no A* needed.
+        //
+        //   2. Directly adjacent: from.exit_node == to.entry_node.  A* is trivial
+        //      (start == goal → empty interior).  The path is exactly [from, to].
+        //      This case is missed by the RouteGenerator when a longer, higher-
+        //      scoring combination (that routes *through* the adjacent segment as an
+        //      interior) is tried first and succeeds.
+        //
+        // Guard: both projections must be within 25 % of the search radius.  DNP
+        // validation is the ultimate safety net for false positives.
+        let nearby_threshold = params.candidate_search_radius_m * 0.25;
+        let precheck: Option<(Vec<SegmentId>, Vec<usize>)> = 'precheck: {
+            if lrps.len() == 2 {
+                for (i, from_cand) in all_candidates[0].iter().enumerate() {
+                    for (j, to_cand) in all_candidates[1].iter().enumerate() {
+                        let both_close = from_cand.projection.distance_m <= nearby_threshold
+                            && to_cand.projection.distance_m <= nearby_threshold;
+                        if !both_close { continue; }
+
+                        let is_same_seg = from_cand.segment_id == to_cand.segment_id
+                            && from_cand.traversal == to_cand.traversal
+                            && from_cand.projection.arc_offset_m <= to_cand.projection.arc_offset_m;
+
+                        // Directly adjacent: from's exit node is to's entry node.
+                        // A* will return a trivial empty interior for this pair.
+                        let is_adjacent = from_cand.exit_node == to_cand.entry_node;
+
+                        if is_same_seg || is_adjacent {
+                            let indices = vec![i, j];
+                            if let Some(p) = try_route_combination(
+                                &indices, &all_candidates, lrps, graph, params, t, &mut route_cache,
+                            ) {
+                                break 'precheck Some((p, indices));
+                            }
+                        }
+                    }
                 }
             }
-            let outcome = DecodeOutcome::NoRoute { leg: 0 };
-            t.push_summary(DecodeEvent::DecodeComplete(outcome));
-            return Err(DecodeError::AllCombinationsFailed(0));
+            None
+        };
+
+        if let Some(r) = precheck {
+            r
+        } else {
+            'search: {
+                for indices in Gen::new(&all_candidates) {
+                    if let Some(p) = try_route_combination(
+                        &indices, &all_candidates, lrps, graph, params, t, &mut route_cache,
+                    ) {
+                        break 'search (p, indices);
+                    }
+                }
+                let outcome = DecodeOutcome::NoRoute { leg: 0 };
+                t.push_summary(DecodeEvent::DecodeComplete(outcome));
+                return Err(DecodeError::AllCombinationsFailed(0));
+            }
         }
     };
 
@@ -151,6 +212,8 @@ pub fn decode(
     let first_lrp_arc_m = all_candidates[0][winning_indices[0]].projection.arc_offset_m;
     let last_lrp_arc_m  = all_candidates[lrps.len() - 1][*winning_indices.last().unwrap()]
         .projection.arc_offset_m;
+    let first_seg_traversal = all_candidates[0][winning_indices[0]].traversal;
+    let last_seg_traversal  = all_candidates[lrps.len() - 1][*winning_indices.last().unwrap()].traversal;
 
     // ── 5. Emit completion ──────────────────────────────────────────────────
     let outcome = DecodeOutcome::Success {
@@ -162,7 +225,7 @@ pub fn decode(
         t.push_summary(DecodeEvent::DecodeComplete(outcome));
     }
 
-    Ok(DecodedLocation { path, pos_offset_m, neg_offset_m, first_lrp_arc_m, last_lrp_arc_m, trace })
+    Ok(DecodedLocation { path, pos_offset_m, neg_offset_m, first_lrp_arc_m, last_lrp_arc_m, first_seg_traversal, last_seg_traversal, trace })
 }
 
 // ── Per-combination routing attempt ──────────────────────────────────────────
@@ -198,6 +261,31 @@ fn try_route_combination(
         let lfrcnp_raw = lrp.lfrcnp.unwrap_or(7);
         let lfrcnp     = lfrcnp_raw.saturating_add(params.lfrcnp_tolerance).min(7);
         let dnp        = lrp.dnp.unwrap_or(openlr_codec::LinearInterval { lb: 0.0, ub: 15_000.0 });
+
+        // Same-segment fast path: both LRPs are on the same segment traversed in the
+        // same direction, with the from-LRP before the to-LRP.  No A* needed — the
+        // distance is simply the difference of arc offsets.  Routing from exit_node back
+        // to entry_node would force a U-turn on the same segment, which A* correctly
+        // blocks; we must bypass A* entirely for this case.
+        if from.segment_id == to.segment_id
+            && from.traversal == to.traversal
+            && from.projection.arc_offset_m <= to.projection.arc_offset_m
+        {
+            let direct_m = to.projection.arc_offset_m - from.projection.arc_offset_m;
+            if validate_dnp(leg, direct_m, dnp, params, trace).is_err() {
+                return None;
+            }
+            trace.push_summary(DecodeEvent::RouteFound {
+                leg,
+                path: vec![],
+                length_m: direct_m,
+            });
+            if path.is_empty() {
+                path.push(from.segment_id);
+            }
+            // to.segment_id == from.segment_id — already in path; do not push again.
+            continue;
+        }
 
         let key = (from.exit_node, to.entry_node, lfrcnp);
 
@@ -262,7 +350,20 @@ fn try_route_combination(
             path.push(from.segment_id);
         }
         path.extend_from_slice(&segments);
-        path.push(to.segment_id);
+        // Don't push to.segment_id when it equals from.segment_id and the interior
+        // is empty — that is the single-segment case, and from is already in path.
+        if !segments.is_empty() || to.segment_id != from.segment_id {
+            path.push(to.segment_id);
+        }
+    }
+
+    // Consecutive duplicate segments mean A* traversed the to-candidate's own
+    // segment backward just to arrive at its entry node — a degenerate U-turn
+    // that the A* U-turn prevention should ideally block but sometimes misses
+    // when the incoming segment on the to-candidate happens to differ.  Any path
+    // with a consecutive dup is topologically invalid for OpenLR.
+    if path.windows(2).any(|w| w[0] == w[1]) {
+        return None;
     }
 
     Some(path)

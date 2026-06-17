@@ -323,8 +323,8 @@ mod integration {
         }
 
         let params = DecodeParams::preset(Preset::Permissive);
-        eprintln!("Params: radius={:.0}m  bearing_tol={:.0}°  max_cands={}  lfrcnp_tol={}  max_exp={}",
-            params.candidate_search_radius_m, params.bearing_tolerance_deg,
+        eprintln!("Params: radius={:.0}m  snap={:.0}m  max_cands={}  lfrcnp_tol={}  max_exp={}",
+            params.candidate_search_radius_m, params.snap_to_endpoint_threshold_m,
             params.max_candidates_per_lrp, params.lfrcnp_tolerance, params.max_astar_expansions);
         let keys = prefetch_tile_keys(&loc_ref.lrps, &params, provider.zoom);
         eprintln!("Prefetching {} tile(s) …", keys.len());
@@ -336,7 +336,9 @@ mod integration {
 
         let wkt = path_to_wkt(
             &result.path, result.pos_offset_m, result.neg_offset_m,
-            result.first_lrp_arc_m, result.last_lrp_arc_m, provider.graph(),
+            result.first_lrp_arc_m, result.last_lrp_arc_m,
+            result.first_seg_traversal, result.last_seg_traversal,
+            provider.graph(),
         ).expect("WKT generation failed");
 
         eprintln!("Decoded {} segment(s):", result.path.len());
@@ -507,8 +509,8 @@ mod integration {
 
         let params = DecodeParams::preset(Preset::Permissive);
         eprintln!(
-            "Params: radius={:.0}m  bearing_tol={:.0}°  lfrcnp_tolerance={}  max_expansions={}",
-            params.candidate_search_radius_m, params.bearing_tolerance_deg,
+            "Params: radius={:.0}m  snap={:.0}m  lfrcnp_tolerance={}  max_expansions={}",
+            params.candidate_search_radius_m, params.snap_to_endpoint_threshold_m,
             params.lfrcnp_tolerance, params.max_astar_expansions,
         );
 
@@ -521,7 +523,7 @@ mod integration {
         match result {
             Ok(decoded) => {
                 eprintln!("Leg-4 decode OK: {} segment(s)", decoded.path.len());
-                if let Some(wkt) = path_to_wkt(&decoded.path, decoded.pos_offset_m, decoded.neg_offset_m, decoded.first_lrp_arc_m, decoded.last_lrp_arc_m, provider.graph()) {
+                if let Some(wkt) = path_to_wkt(&decoded.path, decoded.pos_offset_m, decoded.neg_offset_m, decoded.first_lrp_arc_m, decoded.last_lrp_arc_m, decoded.first_seg_traversal, decoded.last_seg_traversal, provider.graph()) {
                     println!("{wkt}");
                 }
             }
@@ -795,7 +797,9 @@ mod integration {
 
         let wkt = path_to_wkt(
             &result.path, result.pos_offset_m, result.neg_offset_m,
-            result.first_lrp_arc_m, result.last_lrp_arc_m, provider.graph(),
+            result.first_lrp_arc_m, result.last_lrp_arc_m,
+            result.first_seg_traversal, result.last_seg_traversal,
+            provider.graph(),
         ).expect("WKT generation failed");
 
         eprintln!("WKT point count: {}", wkt.split(',').count());

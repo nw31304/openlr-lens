@@ -101,11 +101,18 @@ pub fn bearing_at_offset(vertices: &[(f64, f64)], arc_offset_m: f64, forward: bo
     let p_start = interpolate_at(vertices, ws);
     let p_end = interpolate_at(vertices, we);
 
-    // Degenerate: window collapsed to a point — fall back to overall direction.
+    // Degenerate: window collapsed to a point (e.g. arc=0 with forward=false, or a
+    // zero-length segment).  Fall back to the overall segment direction, respecting
+    // the `forward` flag so last-LRP backward windows at arc=0 get the reversed
+    // bearing instead of the forward bearing.
     if (p_start.0 - p_end.0).hypot(p_start.1 - p_end.1) < 1e-12 {
         let first = vertices[0];
         let last = *vertices.last().unwrap();
-        return bearing_deg(first.0, first.1, last.0, last.1);
+        return if forward {
+            bearing_deg(first.0, first.1, last.0, last.1)
+        } else {
+            bearing_deg(last.0, last.1, first.0, first.1)
+        };
     }
 
     if forward {

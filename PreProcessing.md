@@ -944,8 +944,19 @@ pipeline/
 
 web/
   src/
-    main.js           MapLibre map; tile loader (?tiles= param); segment click/highlight; legend
-    decoder.js        Binary tile payload → GeoJSON features (custom OLRL format decoder)
+    main.jsx          React entry point; mounts <App />
+    App.jsx           Top-level: WASM init, tile base URL, PMTiles setup; renders all panels
+    App.css           Global styles
+    store.js          Zustand store; decode orchestration (start/load_tile/decode); 3-cache pattern
+    tileDecoder.js    OLRL v2 binary tile payload → GeoJSON features (custom format decoder)
+    wasm.js           WASM module loader
+    hooks.js          useDraggable hook (panels)
+    components/
+      Map.jsx         MapLibre GL JS map; 6 custom sources; click handlers; decode→layers
+      TopBar.jsx      Input bar, preset select, Segs/Params/Trace toggles, Decode button
+      ParamsPanel.jsx All decode params + FRC/FOW penalty tables, with preset presets
+      ResultPanel.jsx Post-decode segment list; click-to-highlight; OSM way links
+      TracePanel.jsx  Step-by-step decode trace: codec, candidates, routing (A*), offsets, result
   vite.config.js      Dev server; serve-tiles plugin (HTTP 206 range support for PMTiles)
 
 out/
