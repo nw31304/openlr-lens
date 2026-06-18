@@ -1,9 +1,26 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store.js';
 
+const TRACE_LEVELS = ['Off', 'Summary', 'Full'];
+
 export default function TopBar() {
-  const { openlrString, preset, showParams, showTrace, showSegmentLayer, decoding, decodeResult,
-          setOpenlrString, applyPreset, toggleParams, toggleTrace, toggleSegmentLayer, runDecode } = useStore();
+  const { openlrString, showParams, showTrace, showSegmentLayer, decoding, params,
+          setOpenlrString, toggleParams, toggleTrace, toggleSegmentLayer,
+          setTraceLevel, resetToDefaults, runDecode } = useStore();
+
+  const [showGear, setShowGear] = useState(false);
+  const gearRef = useRef(null);
+
+  const traceLevel = params?.trace_level ?? 'Summary';
+
+  useEffect(() => {
+    if (!showGear) return;
+    const handler = (e) => {
+      if (gearRef.current && !gearRef.current.contains(e.target)) setShowGear(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showGear]);
 
   return (
     <div className="top-bar">
@@ -16,26 +33,48 @@ export default function TopBar() {
         onKeyDown={e => e.key === 'Enter' && runDecode()}
         spellCheck={false}
       />
-      <select className="preset-select" value={preset} onChange={e => applyPreset(e.target.value)}>
-        <option value="Permissive">Permissive</option>
-        <option value="Default">Default</option>
-        <option value="Strict">Strict</option>
-      </select>
-      <button
-        className={`params-btn${showSegmentLayer ? ' active' : ''}`}
-        onClick={toggleSegmentLayer}
-        title={showSegmentLayer ? 'Hide all road segments' : 'Show all road segments (FRC colored, clickable)'}
-      >{showSegmentLayer ? '● Segs' : '○ Segs'}</button>
-      <button
-        className={`params-btn${showParams ? ' active' : ''}`}
-        onClick={toggleParams}
-        title="Decode parameters"
-      >⚙</button>
-      <button
-        className={`params-btn${showTrace ? ' active' : ''}`}
-        onClick={toggleTrace}
-        title="Decode trace"
-      >⚡</button>
+      <div className="gear-wrap" ref={gearRef}>
+        <button
+          className={`params-btn${showGear ? ' active' : ''}`}
+          onClick={() => setShowGear(g => !g)}
+          title="Options"
+        >⚙</button>
+        {showGear && (
+          <div className="gear-panel">
+            <div className="gear-row">
+              <span>Road segments</span>
+              <button className={`gear-toggle${showSegmentLayer ? ' on' : ''}`} onClick={toggleSegmentLayer}>
+                {showSegmentLayer ? 'On' : 'Off'}
+              </button>
+            </div>
+            <div className="gear-row">
+              <span>Trace panel</span>
+              <button className={`gear-toggle${showTrace ? ' on' : ''}`} onClick={toggleTrace}>
+                {showTrace ? 'On' : 'Off'}
+              </button>
+            </div>
+            <div className="gear-row">
+              <span>Trace level</span>
+              <div className="gear-level-group">
+                {TRACE_LEVELS.map(lvl => (
+                  <button
+                    key={lvl}
+                    className={`gear-level-btn${traceLevel === lvl ? ' active' : ''}`}
+                    onClick={() => setTraceLevel(lvl)}
+                  >{lvl}</button>
+                ))}
+              </div>
+            </div>
+            <div className="gear-divider" />
+            <button className="gear-action" onClick={() => { toggleParams(); setShowGear(false); }}>
+              Parameters…
+            </button>
+            <button className="gear-action gear-reset" onClick={() => { resetToDefaults(); setShowGear(false); }}>
+              Reset to defaults
+            </button>
+          </div>
+        )}
+      </div>
       <button className="decode-btn" onClick={runDecode} disabled={decoding}>
         {decoding ? '…' : 'Decode'}
       </button>

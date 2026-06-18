@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useStore } from '../store.js';
 
 const SCALAR_FIELDS = [
@@ -7,10 +7,12 @@ const SCALAR_FIELDS = [
   { key: 'distance_weight',              label: 'Distance weight',         unit: '',      step: 0.05,  min: 0,     max: 2      },
   { key: 'bearing_weight',               label: 'Bearing weight',          unit: '',      step: 0.05,  min: 0,     max: 2      },
   { key: 'bearing_penalty_per_bucket',   label: 'Bearing pen./bucket',     unit: '',      step: 0.01,  min: 0,     max: 1      },
+  { key: 'max_bearing_deviation_deg',    label: 'Max bearing deviation',   unit: '°',     step: 5,     min: 0,     max: 180    },
   { key: 'frc_weight',                   label: 'FRC weight',              unit: '',      step: 0.05,  min: 0,     max: 2      },
   { key: 'fow_weight',                   label: 'FOW weight',              unit: '',      step: 0.05,  min: 0,     max: 2      },
   { key: 'interior_weight',              label: 'Interior snap weight',    unit: '',      step: 0.05,  min: 0,     max: 2      },
   { key: 'wrong_endpoint_weight',        label: 'Wrong endpoint weight',   unit: '',      step: 0.05,  min: 0,     max: 2      },
+  { key: 'max_candidate_score',          label: 'Max candidate score',     unit: '',      step: 0.05,  min: 0,     max: 5      },
   { key: 'max_candidates_per_lrp',       label: 'Max candidates',          unit: '/LRP',  step: 1,     min: 1,     max: 50,    int: true },
   { key: 'dnp_tolerance_pct',            label: 'DNP tolerance',           unit: '',      step: 0.05,  min: 0,     max: 1      },
   { key: 'max_path_search_factor',       label: 'Path search factor',      unit: '×DNP',  step: 0.5,   min: 1,     max: 20     },
@@ -127,6 +129,7 @@ function PenaltyTable({ tableKey, rowLabels, colLabels }) {
 
 export default function ParamsPanel() {
   const { params, showParams, setParam } = useStore();
+  const [showAdvanced, setShowAdvanced] = useState(false);
   if (!showParams) return null;
 
   return (
@@ -147,15 +150,23 @@ export default function ParamsPanel() {
         ))}
       </div>
 
-      <div className="table-section">
-        <div className="table-section-title">FRC penalty table</div>
-        <PenaltyTable tableKey="frc_penalty_table" rowLabels={FRC_LABELS} colLabels={FRC_LABELS} />
-      </div>
+      <button className="advanced-toggle" onClick={() => setShowAdvanced(s => !s)}>
+        {showAdvanced ? '▾' : '▸'} Advanced penalty tables
+      </button>
 
-      <div className="table-section">
-        <div className="table-section-title">FOW penalty table</div>
-        <PenaltyTable tableKey="fow_penalty_table" rowLabels={FOW_LABELS} colLabels={FOW_LABELS} />
-      </div>
+      {showAdvanced && (
+        <>
+          <div className="table-section">
+            <div className="table-section-title">FRC penalty table</div>
+            <PenaltyTable tableKey="frc_penalty_table" rowLabels={FRC_LABELS} colLabels={FRC_LABELS} />
+          </div>
+
+          <div className="table-section">
+            <div className="table-section-title">FOW penalty table</div>
+            <PenaltyTable tableKey="fow_penalty_table" rowLabels={FOW_LABELS} colLabels={FOW_LABELS} />
+          </div>
+        </>
+      )}
     </div>
   );
 }

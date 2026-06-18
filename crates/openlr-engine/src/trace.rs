@@ -76,6 +76,23 @@ pub struct ScoredCandidate {
     pub entry_node: NodeId,
 }
 
+/// Summary of a candidate that failed a hard gate (emitted at Summary level).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RejectedCandidate {
+    pub segment_id: SegmentId,
+    pub traversal: TraversalDir,
+    /// Distance from LRP to projected point (available for all gates except FailDirection).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_m: Option<f64>,
+    /// Snap point on the segment (lon, lat). Available whenever projection succeeds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub point: Option<(f64, f64)>,
+    /// Measured bearing at projection point (available after radius gate passes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bearing_deg: Option<f64>,
+    pub verdict: GateVerdict,
+}
+
 // ── Gate verdicts / skip reasons ─────────────────────────────────────────────
 
 /// Why a candidate failed a hard gate.
@@ -85,6 +102,10 @@ pub enum GateVerdict {
     FailRadius { distance_m: f64, radius_m: f64 },
     /// Segment geometry was degenerate (fewer than 2 vertices).
     FailDirection,
+    /// Bearing deviation exceeded `max_bearing_deviation_deg`.
+    FailBearing { excess_deg: f64, max_deg: f64 },
+    /// Total score exceeded `max_candidate_score`.
+    FailScore { total: f64, max_score: f64 },
 }
 
 /// Why an A* edge was skipped.
@@ -132,7 +153,7 @@ pub enum DecodeEvent {
     CandidatesRanked {
         lrp_idx: usize,
         accepted: Vec<ScoredCandidate>,
-        rejected_count: usize,
+        rejected: Vec<RejectedCandidate>,
     },
 
     // ── Routing ──────────────────────────────────────────────────────────────

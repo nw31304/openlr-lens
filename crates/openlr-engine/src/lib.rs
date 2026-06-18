@@ -42,16 +42,19 @@ pub struct DecodedLocation {
     /// actual end of the location.
     pub neg_offset_m: f64,
     /// Arc offset of the first LRP on the first path segment, in the traversal direction (m).
-    /// Combined with `pos_offset_m` to determine the trim start: `first_lrp_arc_m + pos_offset_m`.
     pub first_lrp_arc_m: f64,
     /// Arc offset of the last LRP on the last path segment, in the traversal direction (m).
-    /// Used as the reference point for `neg_offset_m`: `last_lrp_arc_m - neg_offset_m`.
     pub last_lrp_arc_m: f64,
-    /// Traversal direction of path[0] — needed by `path_to_wkt` to orient the first segment
-    /// without relying on node-connectivity heuristics that can fail when A* U-turns.
+    /// Traversal direction of path[0].
     pub first_seg_traversal: TraversalDir,
-    /// Traversal direction of path[last] — symmetric counterpart for the last segment.
+    /// Traversal direction of path[last].
     pub last_seg_traversal: TraversalDir,
+    /// Projected (lon, lat) of the winning candidate's snap point for each LRP.
+    pub lrp_snap_points: Vec<(f64, f64)>,
+    /// Whether each LRP's winning snap was to a segment endpoint node (true) or interior (false).
+    pub lrp_snap_is_endpoint: Vec<bool>,
+    /// Distance from each encoded LRP coordinate to its snap point, meters.
+    pub lrp_snap_distances_m: Vec<f64>,
     /// Trace of every decision made during this decode.
     /// `None` when `params.trace_level == TraceLevel::Off`.
     pub trace: Option<DecodeTrace>,
@@ -68,6 +71,20 @@ pub enum DecodeError {
     AllCombinationsFailed(usize),
 }
 
+/// Bundles a `DecodeError` with the partial `DecodeTrace` accumulated before the failure.
+/// The trace is `None` when `params.trace_level == TraceLevel::Off`.
+#[derive(Debug, Clone)]
+pub struct DecodeFailure {
+    pub error: DecodeError,
+    pub trace: Option<DecodeTrace>,
+}
+
+impl std::fmt::Display for DecodeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 /// Decode a `LocationReference` against `graph` using `params`.
@@ -78,7 +95,7 @@ pub fn decode(
     loc_ref: &LocationReference,
     graph: &Graph,
     params: &DecodeParams,
-) -> Result<DecodedLocation, DecodeError> {
+) -> Result<DecodedLocation, DecodeFailure> {
     let lrps = &loc_ref.lrps;
     let mut trace = if params.trace_level != TraceLevel::Off {
         Some(Trace::new(params.clone()))
@@ -103,7 +120,7 @@ pub fn decode(
             if let Some(t) = &mut trace {
                 t.push_summary(DecodeEvent::DecodeComplete(outcome));
             }
-            return Err(DecodeError::NoCandidates(i));
+            return Err(DecodeFailure { error: DecodeError::NoCandidates(i), trace });
         }
         all_candidates.push(cands);
     }
@@ -115,7 +132,7 @@ pub fn decode(
     // `trace` is free for the offset section below.
     // `winning_indices` is returned alongside the path so we can look up the
     // first/last candidate arc offsets for offset trimming.
-    let (path, winning_indices): (Vec<SegmentId>, Vec<usize>) = {
+    let route_result: Option<(Vec<SegmentId>, Vec<usize>)> = {
         let t = trace.get_or_insert_with(|| Trace::new(params.clone()));
         let mut route_cache: RouteCache = HashMap::new();
 
@@ -171,21 +188,29 @@ pub fn decode(
         };
 
         if let Some(r) = precheck {
-            r
+            Some(r)
         } else {
-            'search: {
+            let found = 'search: {
                 for indices in Gen::new(&all_candidates) {
                     if let Some(p) = try_route_combination(
                         &indices, &all_candidates, lrps, graph, params, t, &mut route_cache,
                     ) {
-                        break 'search (p, indices);
+                        break 'search Some((p, indices));
                     }
                 }
+                None
+            };
+            if found.is_none() {
                 let outcome = DecodeOutcome::NoRoute { leg: 0 };
                 t.push_summary(DecodeEvent::DecodeComplete(outcome));
-                return Err(DecodeError::AllCombinationsFailed(0));
             }
+            found
         }
+    };
+
+    let (path, winning_indices): (Vec<SegmentId>, Vec<usize>) = match route_result {
+        Some(r) => r,
+        None => return Err(DecodeFailure { error: DecodeError::AllCombinationsFailed(0), trace }),
     };
 
     // ── 3. Offsets ──────────────────────────────────────────────────────────
@@ -201,19 +226,25 @@ pub fn decode(
         .map(|interval| apply_offset(false, interval, &path, graph, t))
         .unwrap_or(0.0);
 
-    // ── 4. LRP arc offsets in traversal direction ───────────────────────────
-    // These tell path_to_wkt where each LRP projects on its segment so that
-    // pos/neg offsets are applied relative to the LRP position, not the
-    // segment's endpoint node.  For standard node-snapping encoders the LRP
-    // is at the segment endpoint so these equal 0 / segment_length respectively,
-    // and the trim is unchanged.  For mid-segment LRPs the correction matters.
-    // arc_offset_m is always measured from traversal entry (geometry is reversed
-    // before projection for Backward candidates), so no direction conversion needed.
+    // ── 4. LRP arc offsets, snap points, traversal directions ──────────────
     let first_lrp_arc_m = all_candidates[0][winning_indices[0]].projection.arc_offset_m;
     let last_lrp_arc_m  = all_candidates[lrps.len() - 1][*winning_indices.last().unwrap()]
         .projection.arc_offset_m;
     let first_seg_traversal = all_candidates[0][winning_indices[0]].traversal;
     let last_seg_traversal  = all_candidates[lrps.len() - 1][*winning_indices.last().unwrap()].traversal;
+
+    let lrp_snap_points: Vec<(f64, f64)> = (0..lrps.len())
+        .map(|i| all_candidates[i][winning_indices[i]].projection.point)
+        .collect();
+    let lrp_snap_is_endpoint: Vec<bool> = (0..lrps.len())
+        .map(|i| {
+            let p = &all_candidates[i][winning_indices[i]].projection;
+            p.is_at_entry || p.is_at_exit
+        })
+        .collect();
+    let lrp_snap_distances_m: Vec<f64> = (0..lrps.len())
+        .map(|i| all_candidates[i][winning_indices[i]].projection.distance_m)
+        .collect();
 
     // ── 5. Emit completion ──────────────────────────────────────────────────
     let outcome = DecodeOutcome::Success {
@@ -225,7 +256,13 @@ pub fn decode(
         t.push_summary(DecodeEvent::DecodeComplete(outcome));
     }
 
-    Ok(DecodedLocation { path, pos_offset_m, neg_offset_m, first_lrp_arc_m, last_lrp_arc_m, first_seg_traversal, last_seg_traversal, trace })
+    Ok(DecodedLocation {
+        path, pos_offset_m, neg_offset_m,
+        first_lrp_arc_m, last_lrp_arc_m,
+        first_seg_traversal, last_seg_traversal,
+        lrp_snap_points, lrp_snap_is_endpoint, lrp_snap_distances_m,
+        trace,
+    })
 }
 
 // ── Per-combination routing attempt ──────────────────────────────────────────

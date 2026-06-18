@@ -3,8 +3,8 @@ use openlr_graph::{bearing_at_offset, project_onto_polyline, Direction, Graph, S
 
 use crate::params::DecodeParams;
 use crate::trace::{
-    CandidateScore, DecodeEvent, GateVerdict, ProjectionResult, ScoredCandidate,
-    TraversalDir, DecodeTrace,
+    CandidateScore, DecodeEvent, GateVerdict, ProjectionResult, RejectedCandidate,
+    ScoredCandidate, TraversalDir, DecodeTrace,
 };
 
 /// Select and rank candidate segments for one LRP.
@@ -31,7 +31,7 @@ pub fn select_candidates(
     let nearby = graph.segments_near(lon, lat, params.candidate_search_radius_m);
 
     let mut accepted: Vec<ScoredCandidate> = Vec::new();
-    let mut rejected_count = 0usize;
+    let mut rejected: Vec<RejectedCandidate> = Vec::new();
 
     for (seg_id, _coarse_dist) in nearby {
         let seg = match graph.segments.get(&seg_id) {
@@ -50,7 +50,7 @@ pub fn select_candidates(
 
         for &dir in dirs {
             match evaluate_candidate(lrp, seg_id, dir, is_last_lrp, seg, params) {
-                Ok(scored) => {
+                EvalResult::Accepted(scored) => {
                     trace.push_full(DecodeEvent::CandidateEvaluated {
                         lrp_idx,
                         segment_id: seg_id,
@@ -61,22 +61,29 @@ pub fn select_candidates(
                     });
                     accepted.push(scored);
                 }
-                Err(verdict) => {
-                    rejected_count += 1;
+                EvalResult::Rejected { verdict, distance_m, point, bearing_deg } => {
                     trace.push_full(DecodeEvent::CandidateEvaluated {
                         lrp_idx,
                         segment_id: seg_id,
                         traversal: dir,
                         projection: ProjectionResult {
                             arc_offset_m: 0.0,
-                            point: (0.0, 0.0),
-                            distance_m: 0.0,
-                            bearing_deg: 0.0,
+                            point: point.unwrap_or((0.0, 0.0)),
+                            distance_m: distance_m.unwrap_or(0.0),
+                            bearing_deg: bearing_deg.unwrap_or(0.0),
                             is_at_entry: false,
                             is_at_exit: false,
                         },
-                        verdict,
+                        verdict: verdict.clone(),
                         score: None,
+                    });
+                    rejected.push(RejectedCandidate {
+                        segment_id: seg_id,
+                        traversal: dir,
+                        distance_m,
+                        point,
+                        bearing_deg,
+                        verdict,
                     });
                 }
             }
@@ -94,13 +101,27 @@ pub fn select_candidates(
     trace.push_summary(DecodeEvent::CandidatesRanked {
         lrp_idx,
         accepted: accepted.clone(),
-        rejected_count,
+        rejected,
     });
 
     accepted
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
+
+/// Result of evaluating a single candidate segment/direction pair.
+enum EvalResult {
+    Accepted(ScoredCandidate),
+    Rejected {
+        verdict: GateVerdict,
+        /// Distance from LRP to projected point. `None` only for `FailDirection`.
+        distance_m: Option<f64>,
+        /// Snap point (lon, lat). `None` only for `FailDirection`.
+        point: Option<(f64, f64)>,
+        /// Bearing at the projection point. `None` for `FailDirection` and `FailRadius`.
+        bearing_deg: Option<f64>,
+    },
+}
 
 fn evaluate_candidate(
     lrp: &Lrp,
@@ -109,7 +130,7 @@ fn evaluate_candidate(
     is_last_lrp: bool,
     seg: &openlr_graph::NetworkSegment,
     params: &DecodeParams,
-) -> Result<ScoredCandidate, GateVerdict> {
+) -> EvalResult {
     let (lon, lat) = lrp.coord;
 
     // Geometry oriented in the traversal direction.
@@ -119,15 +140,27 @@ fn evaluate_candidate(
     };
 
     // Project the LRP coordinate onto the segment.
-    let proj = project_onto_polyline(lon, lat, &geom)
-        .ok_or(GateVerdict::FailDirection)?;
+    let proj = match project_onto_polyline(lon, lat, &geom) {
+        Some(p) => p,
+        None => return EvalResult::Rejected {
+            verdict: GateVerdict::FailDirection,
+            distance_m: None,
+            point: None,
+            bearing_deg: None,
+        },
+    };
 
     // Hard gate: search radius.
     if proj.distance_m > params.candidate_search_radius_m {
-        return Err(GateVerdict::FailRadius {
-            distance_m: proj.distance_m,
-            radius_m: params.candidate_search_radius_m,
-        });
+        return EvalResult::Rejected {
+            verdict: GateVerdict::FailRadius {
+                distance_m: proj.distance_m,
+                radius_m: params.candidate_search_radius_m,
+            },
+            distance_m: Some(proj.distance_m),
+            point: Some(proj.point),
+            bearing_deg: None,
+        };
     }
 
     // Endpoint snapping: if the projection falls within `snap_to_endpoint_threshold_m`
@@ -171,6 +204,20 @@ fn evaluate_candidate(
     // ~1.41° for TPEG).  Treat a zero-width interval (XML) as 1°.
     let bucket_size = (lrp.bearing.ub_deg - lrp.bearing.lb_deg).max(1.0);
     let excess_deg = lrp.bearing.excess(bearing_deg);
+
+    // Hard gate: bearing deviation beyond max_bearing_deviation_deg rejects outright.
+    if excess_deg > params.max_bearing_deviation_deg {
+        return EvalResult::Rejected {
+            verdict: GateVerdict::FailBearing {
+                excess_deg,
+                max_deg: params.max_bearing_deviation_deg,
+            },
+            distance_m: Some(proj.distance_m),
+            point: Some(snapped_point),
+            bearing_deg: Some(bearing_deg),
+        };
+    }
+
     let sector_delta = excess_deg / bucket_size;
     let bearing_score = params.bearing_weight * sector_delta * params.bearing_penalty_per_bucket;
 
@@ -202,12 +249,22 @@ fn evaluate_candidate(
     let total = distance_score + bearing_score + frc_score + fow_score
         + interior_score + wrong_endpoint_score;
 
+    // Hard gate: implausibly high total score.
+    if total > params.max_candidate_score {
+        return EvalResult::Rejected {
+            verdict: GateVerdict::FailScore { total, max_score: params.max_candidate_score },
+            distance_m: Some(proj.distance_m),
+            point: Some(snapped_point),
+            bearing_deg: Some(bearing_deg),
+        };
+    }
+
     let (entry_node, exit_node) = match dir {
         TraversalDir::Forward  => (seg.start_node, seg.end_node),
         TraversalDir::Backward => (seg.end_node,   seg.start_node),
     };
 
-    Ok(ScoredCandidate {
+    EvalResult::Accepted(ScoredCandidate {
         segment_id: seg_id,
         traversal: dir,
         projection: ProjectionResult {
@@ -282,28 +339,53 @@ mod tests {
     #[test]
     fn bearing_mismatch_penalized() {
         let g = simple_graph();
-        // East-west segment: correct LRP faces east, mismatched faces north.
-        let lrp_east  = lrp_near_origin(82.0);  // east-ish — correct for this segment
-        let lrp_north = lrp_near_origin(0.0);   // north — mismatched
+        // East-west segment: correct LRP faces east, slightly-off faces east+20°.
+        let lrp_east    = lrp_near_origin(82.0);  // east-ish — correct for this segment
+        let lrp_slight  = lrp_near_origin(40.0);  // 40° off east — within default 45° gate
 
         let params = DecodeParams::default();
         let mut trace_e = DecodeTrace::new(params.clone());
-        let mut trace_n = DecodeTrace::new(params.clone());
+        let mut trace_s = DecodeTrace::new(params.clone());
 
-        let east_cands  = select_candidates(0, &lrp_east,  false, &g, &params, &mut trace_e);
-        let north_cands = select_candidates(0, &lrp_north, false, &g, &params, &mut trace_n);
+        let east_cands   = select_candidates(0, &lrp_east,   false, &g, &params, &mut trace_e);
+        let slight_cands = select_candidates(0, &lrp_slight, false, &g, &params, &mut trace_s);
 
-        // Both should still find the segment — bearing is a soft penalty, not a gate.
-        assert!(!east_cands.is_empty(),  "east-facing LRP should find the east-west segment");
-        assert!(!north_cands.is_empty(), "north-facing LRP should also find the segment (soft penalty)");
+        assert!(!east_cands.is_empty(),   "east-facing LRP should find the east-west segment");
+        assert!(!slight_cands.is_empty(), "slightly-off LRP within gate should still find segment");
 
         // The correctly-aligned LRP should score better (lower total).
         assert!(
-            east_cands[0].score.total < north_cands[0].score.total,
+            east_cands[0].score.total < slight_cands[0].score.total,
             "east bearing should rank better on an east-west segment \
-             (east={:.3}, north={:.3})",
+             (east={:.3}, slight={:.3})",
             east_cands[0].score.total,
-            north_cands[0].score.total,
+            slight_cands[0].score.total,
         );
+    }
+
+    #[test]
+    fn bearing_gate_rejects_large_deviation() {
+        let g = simple_graph();
+        // North-facing LRP on an east-west segment: ~82° deviation, exceeds default 45° gate.
+        let lrp_north = lrp_near_origin(0.0);
+        let params = DecodeParams::default(); // max_bearing_deviation_deg = 45.0
+        let mut trace = DecodeTrace::new(params.clone());
+        let cands = select_candidates(0, &lrp_north, false, &g, &params, &mut trace);
+        assert!(cands.is_empty(), "north-facing LRP should be rejected on east-west segment");
+    }
+
+    #[test]
+    fn bearing_gate_disabled_at_180() {
+        let g = simple_graph();
+        // Same north-facing LRP, but gate opened to 180° — should pass.
+        let lrp_north = lrp_near_origin(0.0);
+        let params = DecodeParams {
+            max_bearing_deviation_deg: 180.0,
+            max_candidate_score: 999.0,
+            ..DecodeParams::default()
+        };
+        let mut trace = DecodeTrace::new(params.clone());
+        let cands = select_candidates(0, &lrp_north, false, &g, &params, &mut trace);
+        assert!(!cands.is_empty(), "gate=180° should admit all bearings");
     }
 }

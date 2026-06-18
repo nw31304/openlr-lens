@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { decodeTile } from './tileDecoder.js';
 
 let _pmtiles = null;
@@ -56,6 +57,8 @@ export const PRESETS = {
     wrong_endpoint_weight:          0.10,
     frc_penalty_table: defaultFrcTable(),
     fow_penalty_table: DEFAULT_FOW_TABLE,
+    max_bearing_deviation_deg:     90.0,
+    max_candidate_score:            1.5,
     max_candidates_per_lrp:        10,
     dnp_tolerance_pct:              0.40,
     max_path_search_factor:         4.0,
@@ -64,7 +67,7 @@ export const PRESETS = {
     trace_level: 'Summary',
   },
   Default: {
-    candidate_search_radius_m:    150.0,
+    candidate_search_radius_m:     30.0,
     snap_to_endpoint_threshold_m:  15.0,
     distance_weight:                0.5,
     bearing_weight:                 0.3,
@@ -75,6 +78,8 @@ export const PRESETS = {
     wrong_endpoint_weight:          0.20,
     frc_penalty_table: defaultFrcTable(),
     fow_penalty_table: DEFAULT_FOW_TABLE,
+    max_bearing_deviation_deg:     45.0,
+    max_candidate_score:            1.5,
     max_candidates_per_lrp:         8,
     dnp_tolerance_pct:              0.25,
     max_path_search_factor:         5.0,
@@ -94,6 +99,8 @@ export const PRESETS = {
     wrong_endpoint_weight:          0.30,
     frc_penalty_table: defaultFrcTable(),
     fow_penalty_table: DEFAULT_FOW_TABLE,
+    max_bearing_deviation_deg:     30.0,
+    max_candidate_score:            1.0,
     max_candidates_per_lrp:         5,
     dnp_tolerance_pct:              0.10,
     max_path_search_factor:         3.0,
@@ -103,9 +110,9 @@ export const PRESETS = {
   },
 };
 
-export const useStore = create((set, get) => ({
+export const useStore = create(persist(
+ (set, get) => ({
   openlrString: '',
-  preset: 'Default',
   params: { ...PRESETS.Default },
   showParams: false,
   showTrace: false,
@@ -118,10 +125,14 @@ export const useStore = create((set, get) => ({
 
   setOpenlrString: (s) => set({ openlrString: s }),
 
-  applyPreset: (p) => set({ preset: p, params: { ...PRESETS[p] } }),
+  resetToDefaults: () => set({ params: { ...PRESETS.Default } }),
 
   setParam: (key, value) => set(state => ({
     params: { ...state.params, [key]: value },
+  })),
+
+  setTraceLevel: (level) => set(state => ({
+    params: { ...state.params, trace_level: level },
   })),
 
   setTableCell: (tableKey, row, col, value) => set(state => {
@@ -215,4 +226,20 @@ export const useStore = create((set, get) => ({
       set({ decoding: false, decodeResult: { ok: false, error: e.message, segments: [] } });
     }
   },
-}));
+ }),
+ {
+   name: 'openlrlens-settings',
+   partialize: (state) => ({
+     openlrString: state.openlrString,
+     params: state.params,
+   }),
+   // Deep-merge params so new fields added to PRESETS.Default survive across
+   // localStorage upgrades — persisted values win, but missing fields fall back
+   // to the current default rather than becoming undefined.
+   merge: (persisted, current) => ({
+     ...current,
+     ...persisted,
+     params: { ...current.params, ...persisted.params },
+   }),
+ }
+));

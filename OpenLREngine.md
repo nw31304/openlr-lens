@@ -29,8 +29,21 @@ LocationReference  ──▶  select_candidates (per LRP)
 ```
 
 The two main public entry points are:
-- `decode(loc_ref, graph, params)` → `Result<DecodedLocation, DecodeError>`
+- `decode(loc_ref, graph, params)` → `Result<DecodedLocation, DecodeFailure>`
 - `path_to_wkt(path, pos_offset_m, neg_offset_m, first_lrp_arc_m, last_lrp_arc_m, graph)` → `Option<String>`
+
+`DecodeFailure` bundles the error with whatever trace was collected before the failure:
+
+```rust
+pub struct DecodeFailure {
+    pub error: DecodeError,
+    pub trace: Option<DecodeTrace>,
+}
+```
+
+This ensures trace data is never silently dropped on failure — the WASM wrapper can include the
+partial trace in the JSON response, which is critical for diagnosing why no candidates were found
+or why all route combinations exhausted.
 
 ---
 
@@ -132,27 +145,51 @@ of these. The `match dir { Forward => arc, Backward => seg_len - arc }` pattern 
 wrong because the geometry is already reversed before projection. The fix was to
 remove the match entirely — all four formulas are direction-independent.
 
-### 3.5 Hard gates and soft penalties
+### 3.5 Endpoint snapping
 
-The candidate evaluation is a two-stage filter:
+Before scoring, the projection arc-offset is snapped to the nearest endpoint if it falls
+within `snap_to_endpoint_threshold_m`:
 
-**Hard gates** (reject the candidate entirely if failed):
+```rust
+if proj.arc_offset_m < threshold            → arc = 0.0 (is_at_entry)
+if proj.arc_offset_m > seg_len - threshold  → arc = seg_len (is_at_exit)
+```
+
+The snapped point and bearing are derived from the endpoint geometry, not the raw projection.
+
+### 3.6 Hard gates and soft scoring
+
+Candidate evaluation is a two-stage filter. All `Rejected` variants carry the measurement
+data captured before the gate (`distance_m`, `point`, `bearing_deg`) so trace output is
+maximally informative even for rejected candidates.
+
+**Hard gates** (candidate rejected immediately):
 1. **Search radius**: `proj.distance_m > candidate_search_radius_m` → `FailRadius`
-2. **Bearing**: `!widened_interval.contains(bearing)` → `FailBearing`
-   - Widened interval = `[LB − τ, UB + τ]` where τ = `bearing_tolerance_deg`
-   - For TPEG (LB == UB), the entire window comes from τ — without τ, every real
-     candidate would be rejected (Invariant 5)
+2. **Bearing**: `bearing_excess > max_bearing_deviation_deg` → `FailBearing`
+   - `bearing_excess` = degrees outside the encoding interval `[LB, UB]` (zero if inside)
+3. **Total score**: `total > max_candidate_score` → `FailScore`
 
-**Soft penalties** (admitted but ranked worse):
-- `bearing_excess`: how far bearing lies outside `[LB, UB]` (zero if inside)
-- `frc_penalty`: steps of FRC mismatch × `frc_penalty_per_step`
-- `fow_penalty`: flat penalty if FOW doesn't match
+**Soft score components** (lower = better, additive — Invariant 7):
 
-**Total score** = `positional_distance_m + bearing_excess + frc_penalty + fow_penalty`
+```
+distance_score       = distance_weight × (distance_m / search_radius_m)
+bearing_score        = bearing_weight × (excess_deg / bucket_size) × bearing_penalty_per_bucket
+frc_score            = frc_weight × frc_penalty_table[lrp_frc][cand_frc]
+fow_score            = fow_weight × fow_penalty_table[lrp_fow][cand_fow]
+interior_score       = interior_weight × (1.0 if not at entry/exit, else 0.0)
+wrong_endpoint_score = wrong_endpoint_weight × (t if !is_last_lrp, else 1−t)
+                       where t = arc_offset_m / seg_len
 
-Lower score = better. Candidates are sorted ascending and truncated to
-`max_candidates_per_lrp`. The truncation bounds the A\* search space from O(N^L)
-to O(K^L) where K = max_candidates_per_lrp and L = LRP count.
+total = sum of above
+```
+
+The FRC and FOW penalty tables are 8×8 matrices of values in `[0, 1]`, configurable from
+the UI. The defaults encode domain knowledge: e.g. Motorway ↔ MultipleCarriageway = 0.10
+(OSM often lacks MC), Motorway ↔ SlipRoad = 0.20 (slip roads attach to motorways).
+
+Candidates are sorted ascending by total score and truncated to `max_candidates_per_lrp`.
+This bounds the A\* search space from O(N^L) to O(K^L) where K = max_candidates_per_lrp
+and L = LRP count.
 
 ---
 
@@ -356,21 +393,51 @@ skipped.
 
 ## 9. Decode parameters (`params.rs`)
 
-| Parameter | Type | Role |
+### Spatial / snapping
+| Parameter | Default | Role |
 |---|---|---|
-| `candidate_search_radius_m` | f64 | Hard gate: max LRP-to-projection distance |
-| `bearing_tolerance_deg` (τ) | f64 | Hard gate extension + map-divergence margin |
-| `dnp_tolerance_pct` (δ) | f64 | DNP window percentage term |
-| `frc_penalty_per_step` | f64 | Soft ranking weight |
-| `fow_penalty` | f64 | Soft ranking weight (flat, not per-step) |
-| `max_candidates_per_lrp` | usize | RouteGenerator search space bound |
-| `max_path_search_factor` | f64 | A\* distance upper bound = dnp.ub × factor |
-| `max_astar_expansions` | usize | Hard node-expansion cap (0 = unlimited) |
-| `lfrcnp_tolerance` | u8 | Extra FRC steps added to encoded LFRCNP floor |
-| `trace_level` | enum | Off / Summary / Full |
+| `candidate_search_radius_m` | 30.0 m | Hard gate: max LRP-to-projection distance |
+| `snap_to_endpoint_threshold_m` | 15.0 m | Snaps projection to nearest endpoint if within this distance |
 
-Three presets: **Permissive** (wide tolerances, cross-map decoding), **Default**,
-**Strict** (tight, same-map decoding only).
+### Scoring weights
+| Parameter | Default | Role |
+|---|---|---|
+| `distance_weight` | 0.5 | Weight for `distance_m / search_radius_m` term |
+| `bearing_weight` | 0.3 | Weight for bearing-excess term |
+| `bearing_penalty_per_bucket` | 0.05 | Penalty per sector of bearing deviation |
+| `frc_weight` | 0.10 | Weight applied to FRC table lookup |
+| `fow_weight` | 0.20 | Weight applied to FOW table lookup |
+| `interior_weight` | 0.10 | Penalty when LRP is not at an endpoint |
+| `wrong_endpoint_weight` | 0.20 | Scales 0→1 based on position along segment |
+
+### Penalty tables
+| Parameter | Default | Role |
+|---|---|---|
+| `frc_penalty_table` | `[[f64;8];8]` | FRC mismatch penalty; `[lrp_frc][cand_frc]` |
+| `fow_penalty_table` | `[[f64;8];8]` | FOW mismatch penalty; `[lrp_fow][cand_fow]` |
+
+### Hard gates
+| Parameter | Default | Role |
+|---|---|---|
+| `max_bearing_deviation_deg` | 45.0° | Rejects candidates with bearing excess beyond this (`#[serde(default)]`) |
+| `max_candidate_score` | 1.5 | Rejects candidates with total score above this (`#[serde(default)]`) |
+
+### Routing / search
+| Parameter | Default | Role |
+|---|---|---|
+| `max_candidates_per_lrp` | 8 | RouteGenerator search space bound |
+| `dnp_tolerance_pct` | 0.25 | DNP window percentage map-divergence term |
+| `max_path_search_factor` | 5.0 | A\* distance upper bound = `dnp.ub × factor` |
+| `max_astar_expansions` | 100 000 | Hard node-expansion cap (0 = unlimited) |
+| `lfrcnp_tolerance` | 2 | Extra FRC steps added to LFRCNP floor |
+| `trace_level` | `Summary` | `Off` / `Summary` / `Full` |
+
+The `#[serde(default)]` attributes on `max_bearing_deviation_deg` and `max_candidate_score`
+ensure that deserialization from old persisted JSON (e.g. localStorage) that predates these
+fields does not fail — missing fields silently get the default value.
+
+Three presets: **Permissive** (wide tolerances, cross-map decoding), **Default** (30 m
+radius, balanced weights), **Strict** (50 m radius, tighter gates).
 
 The distinction between hard-gate parameters and soft-penalty parameters is
 fundamental to the diagnostic capability: loosening a hard gate changes the
@@ -394,14 +461,38 @@ verdict. It captures the exact margin by which each candidate passed or failed e
 gate, making the closed-form "minimum required tolerance" computation possible.
 
 Key event types:
-- `CandidatesRanked { lrp_idx, accepted, rejected_count }` — accepted includes full
-  scores; rejected are counted (detail available in Full mode)
+- `CandidatesRanked { lrp_idx, accepted, rejected }` — `accepted` includes full scores;
+  `rejected: Vec<RejectedCandidate>` carries per-candidate detail at Summary level
 - `RouteSearchStarted { leg, from, to }` — before A\*
 - `RouteFound { leg, path, length_m }` — A\* + DNP both passed
 - `RouteFailed { leg, reason }` — either A\* or DNP failed
 - `DnpChecked { leg, interval, actual_m, passed }`
 - `AStarNodeExpanded` / `AStarEdgeSkipped` — Full mode only
 - `DecodeComplete(DecodeOutcome)` — terminal event with Success or failure reason
+
+`RejectedCandidate` (emitted in `CandidatesRanked.rejected` at Summary level):
+
+```rust
+pub struct RejectedCandidate {
+    pub segment_id:  SegmentId,
+    pub traversal:   TraversalDir,
+    pub distance_m:  Option<f64>,   // None only for FailDirection
+    pub point:       Option<(f64, f64)>,  // snap point (lon, lat); None for FailDirection
+    pub bearing_deg: Option<f64>,   // None for FailDirection and FailRadius
+    pub verdict:     GateVerdict,
+}
+```
+
+`GateVerdict` variants:
+- `Pass` — candidate accepted
+- `FailRadius { distance_m, radius_m }` — outside spatial gate
+- `FailBearing { excess_deg, max_deg }` — bearing deviation exceeded
+- `FailScore { total, max_score }` — total score exceeded hard gate
+- `FailDirection` — degenerate geometry (projection failed)
+
+Having rejected candidates at Summary level (not just Full) is critical for diagnosing
+"no candidates found" failures — without it, the trace gives no indication of *why* all
+candidates for an LRP were rejected.
 
 ---
 
@@ -435,7 +526,7 @@ Key event types:
 
 | File | Contents |
 |---|---|
-| `lib.rs` | `decode()` entry point, `try_route_combination()`, `DecodedLocation`, `DecodeError` |
+| `lib.rs` | `decode()` entry point, `try_route_combination()`, `DecodedLocation`, `DecodeError`, `DecodeFailure` |
 | `candidate.rs` | `select_candidates()`, `evaluate_candidate()`, bearing/projection scoring |
 | `astar.rs` | `find_route()`, path reconstruction, A\* state machine |
 | `route_generator.rs` | `RouteGenerator` — best-first combination iterator |

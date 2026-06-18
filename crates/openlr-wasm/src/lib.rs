@@ -83,12 +83,53 @@ struct LrpInfo {
     lfrcnp: Option<u8>,
     bearing_lb: f64,
     bearing_ub: f64,
+    /// Distance-to-next-point interval in metres. Absent on the last LRP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dnp_lb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dnp_ub: Option<f64>,
+    /// Snap point on the matched segment (lon, lat). Absent on decode failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snap_lon: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snap_lat: Option<f64>,
+    /// True when snap landed on a segment endpoint node; false for interior projection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snap_is_endpoint: Option<bool>,
+    /// Distance from encoded LRP coordinate to snap point, metres.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snap_distance_m: Option<f64>,
+}
+
+fn lrp_info_vec(
+    lrps: &[openlr_codec::lrp::Lrp],
+    snap_points: &[(f64, f64)],
+    snap_is_endpoint: &[bool],
+    snap_distances_m: &[f64],
+) -> Vec<LrpInfo> {
+    lrps.iter().enumerate().map(|(i, lrp)| LrpInfo {
+        lon: lrp.coord.0,
+        lat: lrp.coord.1,
+        frc: lrp.frc,
+        fow: lrp.fow,
+        lfrcnp: lrp.lfrcnp,
+        bearing_lb: lrp.bearing.lb_deg,
+        bearing_ub: lrp.bearing.ub_deg,
+        dnp_lb: lrp.dnp.map(|d| d.lb),
+        dnp_ub: lrp.dnp.map(|d| d.ub),
+        snap_lon: snap_points.get(i).map(|p| p.0),
+        snap_lat: snap_points.get(i).map(|p| p.1),
+        snap_is_endpoint: snap_is_endpoint.get(i).copied(),
+        snap_distance_m: snap_distances_m.get(i).copied(),
+    }).collect()
 }
 
 /// Returned by `Decoder.decode()` as a JSON string.
 #[derive(Serialize)]
 struct DecodeResult {
     ok: bool,
+    /// "TomTomV3" or "Tpeg". Empty string on parse error.
+    format: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     wkt: Option<String>,
     segments: Vec<SegmentInfo>,
@@ -103,11 +144,13 @@ struct DecodeResult {
     /// Raw [LB, UB] of the negative offset interval. Both 0 when no neg offset.
     neg_offset_lb: f64,
     neg_offset_ub: f64,
-    /// WKT of the v3 uncertainty band at the path head (pos offset LB→UB).
-    /// Absent when offset is zero or point-exact (TPEG).
+    /// Conservative WKT trimmed at LB (maximal coverage). Used by the copy button.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conservative_wkt: Option<String>,
+    /// WKT of the v3 uncertainty cap at the path head (LB→UB). Absent when LB==UB.
     #[serde(skip_serializing_if = "Option::is_none")]
     pos_uncertainty_wkt: Option<String>,
-    /// WKT of the v3 uncertainty band at the path tail (neg offset LB→UB).
+    /// WKT of the v3 uncertainty cap at the path tail (end−UB → end−LB). Absent when LB==UB.
     #[serde(skip_serializing_if = "Option::is_none")]
     neg_uncertainty_wkt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -121,6 +164,7 @@ impl DecodeResult {
     fn err(msg: impl Into<String>) -> Self {
         DecodeResult {
             ok: false,
+            format: String::new(),
             wkt: None,
             segments: vec![],
             lrps: vec![],
@@ -130,6 +174,7 @@ impl DecodeResult {
             pos_offset_ub: 0.0,
             neg_offset_lb: 0.0,
             neg_offset_ub: 0.0,
+            conservative_wkt: None,
             pos_uncertainty_wkt: None,
             neg_uncertainty_wkt: None,
             error: Some(msg.into()),
@@ -148,6 +193,7 @@ pub struct Decoder {
     location_ref: Option<LocationReference>,
     params: DecodeParams,
     zoom: u8,
+    openlr_format: &'static str,
 }
 
 #[wasm_bindgen]
@@ -159,6 +205,7 @@ impl Decoder {
             location_ref: None,
             params: DecodeParams::default(),
             zoom: 12,
+            openlr_format: "",
         }
     }
 
@@ -179,7 +226,7 @@ impl Decoder {
                 .map_err(|e| JsValue::from_str(&format!("invalid params: {e}")))?,
         };
 
-        let loc_ref = parse_openlr(openlr_string)
+        let (loc_ref, fmt) = parse_openlr(openlr_string)
             .map_err(|e| JsValue::from_str(&e))?;
 
         let tile_keys = prefetch_tile_keys(&loc_ref.lrps, &params, zoom);
@@ -191,6 +238,7 @@ impl Decoder {
         self.location_ref = Some(loc_ref);
         self.params = params;
         self.zoom = zoom;
+        self.openlr_format = fmt;
 
         Ok(serde_json::to_string(&StartResult { tiles }).unwrap())
     }
@@ -223,34 +271,62 @@ impl Decoder {
             None => return serde_json::to_string(&DecodeResult::err("call start() first")).unwrap(),
         };
 
-        let lrps: Vec<LrpInfo> = loc_ref.lrps.iter().map(|lrp| LrpInfo {
-            lon: lrp.coord.0,
-            lat: lrp.coord.1,
-            frc: lrp.frc,
-            fow: lrp.fow,
-            lfrcnp: lrp.lfrcnp,
-            bearing_lb: lrp.bearing.lb_deg,
-            bearing_ub: lrp.bearing.ub_deg,
-        }).collect();
-
         let result = match engine_decode(loc_ref, &self.loader.graph, &self.params) {
-            Err(e) => return serde_json::to_string(&DecodeResult {
-                lrps,
-                ..DecodeResult::err(e.to_string())
-            }).unwrap(),
+            Err(failure) => {
+                let trace_value = failure.trace.and_then(|t| serde_json::to_value(t).ok());
+                return serde_json::to_string(&DecodeResult {
+                    lrps: lrp_info_vec(&loc_ref.lrps, &[], &[], &[]),
+                    format: self.openlr_format.to_string(),
+                    trace: trace_value,
+                    ..DecodeResult::err(failure.error.to_string())
+                }).unwrap();
+            }
             Ok(r) => r,
         };
 
+        let lrps = lrp_info_vec(
+            &loc_ref.lrps,
+            &result.lrp_snap_points,
+            &result.lrp_snap_is_endpoint,
+            &result.lrp_snap_distances_m,
+        );
+
+        // Resolve offset intervals up front.
+        let pos_int = loc_ref.lrps.first().and_then(|l| l.pos_offset);
+        let neg_int = loc_ref.lrps.last() .and_then(|l| l.neg_offset);
+        let (pos_offset_lb, pos_offset_ub) = pos_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
+        let (neg_offset_lb, neg_offset_ub) = neg_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
+
+        // Display WKT: trimmed at UB — only the *certain* portion.
+        // The [LB, UB] uncertainty caps are drawn separately as dashed overlays;
+        // trimming the solid line at UB means the caps are geometrically adjacent
+        // (cap ends at UB = solid starts at UB) with zero overlap.
         let wkt = path_to_wkt(
             &result.path,
-            result.pos_offset_m,
-            result.neg_offset_m,
+            pos_offset_ub,
+            neg_offset_ub,
             result.first_lrp_arc_m,
             result.last_lrp_arc_m,
             result.first_seg_traversal,
             result.last_seg_traversal,
             &self.loader.graph,
         );
+
+        // Conservative WKT: trimmed at LB — maximal coverage, what the copy button exports.
+        let conservative_wkt = if pos_offset_lb != pos_offset_ub || neg_offset_lb != neg_offset_ub {
+            path_to_wkt(
+                &result.path,
+                pos_offset_lb,
+                neg_offset_lb,
+                result.first_lrp_arc_m,
+                result.last_lrp_arc_m,
+                result.first_seg_traversal,
+                result.last_seg_traversal,
+                &self.loader.graph,
+            )
+        } else {
+            None // same as wkt when LB == UB (TPEG or no offset)
+        };
 
         let n_path = result.path.len();
         let segments: Vec<SegmentInfo> = result.path.iter().enumerate().filter_map(|(i, seg_id)| {
@@ -285,14 +361,6 @@ impl Decoder {
         }).collect();
 
         // ── Offset intervals and uncertainty bands ──────────────────────────
-        // The v3 bucket turns each offset into a [lb, ub] interval; the engine
-        // uses the midpoint as the actual trim.  Expose the full interval so the
-        // UI can draw the uncertainty band between lb and ub.
-        let pos_int = loc_ref.lrps.first().and_then(|l| l.pos_offset);
-        let neg_int = loc_ref.lrps.last() .and_then(|l| l.neg_offset);
-
-        let (pos_offset_lb, pos_offset_ub) = pos_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
-        let (neg_offset_lb, neg_offset_ub) = neg_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
 
         // Compute per-segment arc lengths once so both uncertainty bands can reuse them.
         let actual_lens: Vec<f64> = result.path.iter()
@@ -331,6 +399,7 @@ impl Decoder {
 
         serde_json::to_string(&DecodeResult {
             ok: true,
+            format: self.openlr_format.to_string(),
             wkt,
             segments,
             lrps,
@@ -340,6 +409,7 @@ impl Decoder {
             pos_offset_ub,
             neg_offset_lb,
             neg_offset_ub,
+            conservative_wkt,
             pos_uncertainty_wkt,
             neg_uncertainty_wkt,
             error: None,
@@ -411,25 +481,19 @@ impl Decoder {
 
 // ── Format auto-detection ─────────────────────────────────────────────────────
 
-/// Try OpenLR binary v3 (base64) then TPEG-OLR (hex).  Returns the first that parses.
-fn parse_openlr(s: &str) -> Result<LocationReference, String> {
-    // Strategy: try every plausible interpretation in order of specificity.
-    // For base64-like input (contains +/=, or has base64-valid length), we try both
-    // v3 and TPEG decoders on the decoded bytes.
-    // For hex-like input (all hex chars, even length) we try TPEG hex last.
+/// Try OpenLR binary v3 (base64) then TPEG-OLR (hex).  Returns `(LocationReference, format)`.
+fn parse_openlr(s: &str) -> Result<(LocationReference, &'static str), String> {
     let has_base64_chars = s.chars().any(|c| c == '+' || c == '/' || c == '=');
 
-    // Try v3 base64 first (most common).
     if has_base64_chars || looks_like_base64(s) {
-        if let Ok(r) = decode_v3_base64(s) { return Ok(r); }
-        if let Ok(r) = decode_tpeg_base64(s) { return Ok(r); }
+        if let Ok(r) = decode_v3_base64(s)   { return Ok((r, "TomTomV3")); }
+        if let Ok(r) = decode_tpeg_base64(s) { return Ok((r, "Tpeg")); }
     }
 
-    // Try TPEG hex (hex string of even length).
-    if let Ok(r) = decode_tpeg_hex(s) { return Ok(r); }
+    if let Ok(r) = decode_tpeg_hex(s) { return Ok((r, "Tpeg")); }
 
-    // Last resort: try v3 base64 anyway (url-safe base64 without padding).
     decode_v3_base64(s)
+        .map(|r| (r, "TomTomV3"))
         .map_err(|e| format!("OpenLR parse error (tried v3 base64, TPEG base64, TPEG hex): {e}"))
 }
 

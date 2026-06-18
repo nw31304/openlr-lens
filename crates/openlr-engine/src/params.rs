@@ -111,6 +111,17 @@ pub struct DecodeParams {
     /// 8×8 FOW mismatch table.  `fow_penalty_table[lrp_fow][cand_fow]` ∈ [0, 1].
     pub fow_penalty_table: [[f64; 8]; 8],
 
+    // ── Hard gates ────────────────────────────────────────────────────────────
+    /// Maximum bearing excess beyond the encoding interval before a candidate is
+    /// rejected outright (degrees).  Set to 180.0 to effectively disable.
+    #[serde(default = "default_max_bearing_deviation_deg")]
+    pub max_bearing_deviation_deg: f64,
+    /// Maximum total candidate score before rejection.  Filters implausible
+    /// candidates that passed spatial and bearing gates but are still terrible.
+    /// Set to a large value (e.g. 999.0) to effectively disable.
+    #[serde(default = "default_max_candidate_score")]
+    pub max_candidate_score: f64,
+
     // ── Candidate set ─────────────────────────────────────────────────────────
     /// Number of top candidates to retain per LRP after scoring (best-first).
     pub max_candidates_per_lrp: usize,
@@ -132,6 +143,9 @@ pub struct DecodeParams {
     pub trace_level: TraceLevel,
 }
 
+fn default_max_bearing_deviation_deg() -> f64 { 45.0 }
+fn default_max_candidate_score()        -> f64 { 1.5 }
+
 impl DecodeParams {
     pub fn preset(p: Preset) -> Self {
         match p {
@@ -147,6 +161,8 @@ impl DecodeParams {
                 wrong_endpoint_weight:          0.10,
                 frc_penalty_table: default_frc_table(),
                 fow_penalty_table: default_fow_table(),
+                max_bearing_deviation_deg:      90.0,
+                max_candidate_score:             1.5,
                 max_candidates_per_lrp:          10,
                 dnp_tolerance_pct:               0.40,
                 max_path_search_factor:          4.0,
@@ -167,6 +183,8 @@ impl DecodeParams {
                 wrong_endpoint_weight:          0.30,
                 frc_penalty_table: default_frc_table(),
                 fow_penalty_table: default_fow_table(),
+                max_bearing_deviation_deg:      30.0,
+                max_candidate_score:             1.0,
                 max_candidates_per_lrp:           5,
                 dnp_tolerance_pct:               0.10,
                 max_path_search_factor:          3.0,
@@ -181,7 +199,7 @@ impl DecodeParams {
 impl Default for DecodeParams {
     fn default() -> Self {
         Self {
-            candidate_search_radius_m:    150.0,
+            candidate_search_radius_m:     30.0,
             snap_to_endpoint_threshold_m:  15.0,
             distance_weight:                0.5,
             bearing_weight:                 0.3,
@@ -192,6 +210,8 @@ impl Default for DecodeParams {
             wrong_endpoint_weight:          0.20,
             frc_penalty_table: default_frc_table(),
             fow_penalty_table: default_fow_table(),
+            max_bearing_deviation_deg:      45.0,
+            max_candidate_score:             1.5,
             max_candidates_per_lrp:           8,
             dnp_tolerance_pct:               0.25,
             max_path_search_factor:          5.0,

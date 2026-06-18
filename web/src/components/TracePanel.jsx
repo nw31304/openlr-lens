@@ -133,20 +133,63 @@ function SegBtn({ segId, setTraceHighlight }) {
   );
 }
 
-// ── Codec preamble ────────────────────────────────────────────────────────────
+// ── Reference summary ─────────────────────────────────────────────────────────
 
-function CodecSection({ openlrString, lrps, setTraceLrpFocus }) {
+function fmtBearing(lb, ub) {
+  return Math.abs(ub - lb) < 0.1 ? `${lb.toFixed(1)}°` : `[${lb.toFixed(1)}°, ${ub.toFixed(1)}°]`;
+}
+
+function fmtDnp(lb, ub) {
+  if (lb == null) return null;
+  return Math.abs(ub - lb) < 0.1 ? `${lb.toFixed(1)} m` : `[${lb.toFixed(1)}, ${ub.toFixed(1)}] m`;
+}
+
+function fmtOffset(lb, ub) {
+  if (!lb && !ub) return null;
+  return Math.abs(ub - lb) < 0.1 ? `${lb.toFixed(1)} m` : `[${lb.toFixed(1)}, ${ub.toFixed(1)}] m`;
+}
+
+function buildRefSummary(openlrString, lrps, decodeResult) {
+  const fmtLabel = decodeResult?.format === 'TomTomV3' ? 'TomTom v3'
+                 : decodeResult?.format === 'Tpeg'     ? 'TPEG-OLR'
+                 : '(unknown)';
+  const lines = ['{'];
+  lines.push(`  "format": "${fmtLabel}",`);
+  lines.push(`  "string": "${openlrString}",`);
+  const posOff = fmtOffset(decodeResult?.pos_offset_lb, decodeResult?.pos_offset_ub);
+  const negOff = fmtOffset(decodeResult?.neg_offset_lb, decodeResult?.neg_offset_ub);
+  if (posOff) lines.push(`  "pos_offset": ${posOff},`);
+  if (negOff) lines.push(`  "neg_offset": ${negOff},`);
+  lines.push(`  "lrps": [`);
+  lrps?.forEach((l, i) => {
+    const isLast = i === lrps.length - 1;
+    const dnp = fmtDnp(l.dnp_lb, l.dnp_ub);
+    const parts = [
+      `"coord": [${l.lon.toFixed(6)}, ${l.lat.toFixed(6)}]`,
+      `"frc": ${l.frc}`,
+      `"fow": ${l.fow}`,
+      l.lfrcnp != null ? `"lfrcnp": ${l.lfrcnp}` : null,
+      `"bearing": ${fmtBearing(l.bearing_lb, l.bearing_ub)}`,
+      dnp ? `"dnp": ${dnp}` : null,
+    ].filter(Boolean);
+    lines.push(`    { ${parts.join(', ')} }${isLast ? '' : ','}`);
+  });
+  lines.push('  ]');
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function ReferenceSummarySection({ openlrString, lrps, decodeResult, setTraceLrpFocus }) {
+  const summary = buildRefSummary(openlrString, lrps, decodeResult);
   return (
-    <Section title="Codec" defaultOpen={true}>
-      <div className="tp-row tp-monospace tp-input-str" title={openlrString}>
-        {openlrString || '—'}
-      </div>
+    <Section title="Reference" defaultOpen={true}>
+      <pre className="tp-ref-json">{summary}</pre>
       {lrps?.length > 0 && (
-        <table className="tp-table">
+        <table className="tp-table tp-lrp-table">
           <thead>
             <tr>
               <th>#</th><th>Lon</th><th>Lat</th><th>FRC</th><th>FOW</th>
-              <th>Bearing</th><th>LFRCNP</th>
+              <th>LFRCNP</th><th>Bearing</th><th>DNP</th>
             </tr>
           </thead>
           <tbody>
@@ -162,12 +205,15 @@ function CodecSection({ openlrString, lrps, setTraceLrpFocus }) {
                 <td>{l.lat.toFixed(5)}</td>
                 <td>{l.frc}</td>
                 <td>{l.fow}</td>
+                <td>{l.lfrcnp ?? '—'}</td>
                 <td className="tp-monospace">
                   {Math.abs(l.bearing_ub - l.bearing_lb) < 0.1
                     ? `${l.bearing_lb.toFixed(1)}°`
                     : `${l.bearing_lb.toFixed(1)}°–${l.bearing_ub.toFixed(1)}°`}
                 </td>
-                <td>{l.lfrcnp ?? '—'}</td>
+                <td className="tp-monospace">
+                  {l.dnp_lb == null ? '—' : fmtDnp(l.dnp_lb, l.dnp_ub)}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -177,7 +223,66 @@ function CodecSection({ openlrString, lrps, setTraceLrpFocus }) {
   );
 }
 
+// ── Gate verdict formatting ───────────────────────────────────────────────────
+
+function fmtVerdict(verdict) {
+  if (typeof verdict === 'string') return { label: verdict, cls: 'tp-gate-other' };
+  const [type, data] = Object.entries(verdict)[0];
+  switch (type) {
+    case 'FailBearing':
+      return { label: `Bearing +${data.excess_deg.toFixed(1)}° (max ${data.max_deg}°)`, cls: 'tp-gate-bearing' };
+    case 'FailRadius':
+      return { label: `Radius ${data.distance_m.toFixed(1)}m > ${data.radius_m}m`, cls: 'tp-gate-radius' };
+    case 'FailScore':
+      return { label: `Score ${data.total.toFixed(3)} > ${data.max_score}`, cls: 'tp-gate-score' };
+    case 'FailDirection':
+      return { label: 'Degenerate geometry', cls: 'tp-gate-other' };
+    default:
+      return { label: type, cls: 'tp-gate-other' };
+  }
+}
+
 // ── Candidates section ────────────────────────────────────────────────────────
+
+function RejectedTable({ rejected, setTraceHighlight }) {
+  const [open, setOpen] = useState(false);
+  if (!rejected?.length) return null;
+  return (
+    <div className="tp-rejected-wrap">
+      <button className="tp-rejected-toggle" onClick={() => setOpen(o => !o)}>
+        <span className="tp-section-arrow">{open ? '▾' : '▸'}</span>
+        <span className="tp-gate-other tp-gate-pill">{rejected.length} rejected</span>
+      </button>
+      {open && (
+        <table className="tp-table tp-rej-table">
+          <thead>
+            <tr>
+              <th>Seg</th>
+              <th>Dir</th>
+              <th>Dist m</th>
+              <th>Bear °</th>
+              <th>Gate failure</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rejected.map((r, i) => {
+              const { label, cls } = fmtVerdict(r.verdict);
+              return (
+                <tr key={i}>
+                  <td><SegBtn segId={r.segment_id} setTraceHighlight={setTraceHighlight} /></td>
+                  <td className="tp-dim">{r.traversal === 'Forward' ? 'Fwd' : 'Bwd'}</td>
+                  <td>{r.distance_m != null ? r.distance_m.toFixed(1) : '—'}</td>
+                  <td>{r.bearing_deg != null ? r.bearing_deg.toFixed(1) : '—'}</td>
+                  <td><span className={`tp-gate-pill ${cls}`}>{label}</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
 
 function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight }) {
   const ranked = phase?.ranked;
@@ -188,12 +293,12 @@ function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight }) {
     ? `LRP ${lrpIdx} · ${lrp.lon.toFixed(4)},${lrp.lat.toFixed(4)}`
     : `LRP ${lrpIdx}`;
   const accepted = ranked.accepted ?? [];
-  const rejected = ranked.rejected_count ?? 0;
+  const rejected = ranked.rejected ?? [];
 
   return (
     <Section
       title={`Candidates — ${subtitle}`}
-      badge={`${accepted.length} ✓  ${rejected} ✗`}
+      badge={`${accepted.length} ✓  ${rejected.length} ✗`}
       defaultOpen={true}
     >
       {accepted.length === 0 ? (
@@ -238,9 +343,7 @@ function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight }) {
           </tbody>
         </table>
       )}
-      {rejected > 0 && (
-        <div className="tp-note">{rejected} candidate{rejected !== 1 ? 's' : ''} rejected by hard gates (radius / bearing / direction)</div>
-      )}
+      <RejectedTable rejected={rejected} setTraceHighlight={setTraceHighlight} />
     </Section>
   );
 }
@@ -415,7 +518,10 @@ function ResultSection({ decodeResult }) {
         <div className="tp-err tp-row">{decodeResult.error}</div>
       )}
       {decodeResult.ok && decodeResult.wkt && (
-        <div className="tp-wkt tp-monospace tp-dim">{decodeResult.wkt.slice(0, 140)}{decodeResult.wkt.length > 140 ? '…' : ''}</div>
+        <div className="tp-wkt-row">
+          <div className="tp-wkt tp-monospace tp-dim">{decodeResult.wkt.slice(0, 140)}{decodeResult.wkt.length > 140 ? '…' : ''}</div>
+          <button className="tp-copy-btn" title="Copy WKT (conservative — trimmed at LB)" onClick={() => navigator.clipboard.writeText(decodeResult.conservative_wkt ?? decodeResult.wkt)}>⎘</button>
+        </div>
       )}
     </Section>
   );
@@ -441,8 +547,7 @@ export default function TracePanel() {
   const legCount = lrpCount > 1 ? lrpCount - 1 : 0;
 
   const copyJson = () => {
-    if (!trace) return;
-    navigator.clipboard.writeText(JSON.stringify(trace, null, 2)).catch(() => {});
+    navigator.clipboard.writeText(JSON.stringify(decodeResult, null, 2)).catch(() => {});
   };
 
   const toggleLevel = () => {
@@ -467,7 +572,7 @@ export default function TracePanel() {
           >
             {traceLevel === 'Full' ? 'Full ●' : 'Summary'}
           </button>
-          <button className="tp-copy-btn" onClick={copyJson} disabled={!trace} title="Copy full trace JSON to clipboard">
+          <button className="tp-copy-btn" onClick={copyJson} disabled={!decodeResult} title="Copy decode result + trace JSON">
             Copy JSON
           </button>
           <button className="tp-close-btn" onClick={toggleTrace} title="Close trace panel">✕</button>
@@ -478,14 +583,21 @@ export default function TracePanel() {
         {!decodeResult && (
           <div className="tp-empty-state">Decode a reference to see trace data.</div>
         )}
+        {decodeResult && (
+          <ReferenceSummarySection
+            openlrString={openlrString}
+            lrps={lrps}
+            decodeResult={decodeResult}
+            setTraceLrpFocus={setTraceLrpFocus}
+          />
+        )}
         {decodeResult && !trace && (
           <div className="tp-empty-state">
-            No trace data. Set <code>trace_level</code> to Summary or Full in parameters, then decode again.
+            Trace level is Off — set to Summary or Full and decode again for routing detail.
           </div>
         )}
         {trace && (
           <>
-            <CodecSection openlrString={openlrString} lrps={lrps} setTraceLrpFocus={setTraceLrpFocus} />
 
             {Array.from({ length: lrpCount }, (_, i) => (
               <CandidatesSection

@@ -59,12 +59,14 @@ const BASEMAPS = [
 // Custom sources/layers to preserve across basemap switches via transformStyle.
 const CUSTOM_SOURCES = new Set([
   'olr-segments', 'decoded-path', 'lrp-markers',
+  'lrp-snap', 'lrp-displacement',
   'offset-uncertainty', 'lrp-bearing', 'highlighted-segment', 'trace-segment',
 ]);
 const CUSTOM_LAYER_IDS = new Set([
   'olr-frc0','olr-frc1','olr-frc2','olr-frc3','olr-frc4','olr-frc5','olr-frc6','olr-frc7',
   'olr-highlight', 'decoded-path-line', 'lrp-markers-circle',
-  'offset-uncertainty-halo', 'offset-uncertainty-dash',
+  'lrp-displacement-line', 'lrp-displacement-arrow',
+  'offset-uncertainty-line',
   'lrp-bearing-fill', 'lrp-bearing-outline',
   'highlighted-segment-halo', 'highlighted-segment-line',
   'trace-segment-halo', 'trace-segment-line',
@@ -135,6 +137,40 @@ function bearingConeGeoJSON(lon, lat, lbDeg, ubDeg, radiusM) {
   return { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] }, properties: {} }] };
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function compassBearing(lon1, lat1, lon2, lat2) {
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const y = Math.sin(dLon) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(dLon);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// ── Custom marker images ──────────────────────────────────────────────────────
+
+function addMapImages(map) {
+  // Displacement arrowhead — points north (↑) by default, tip at top-center.
+  // Placed at the snap coordinate with icon-anchor:'top' and rotated by LRP→snap
+  // bearing, so the tip always lands on the snap point and shaft trails toward LRP.
+  const aw = 12, ah = 16;
+  const arrowCanvas = document.createElement('canvas');
+  arrowCanvas.width = aw; arrowCanvas.height = ah;
+  const ac = arrowCanvas.getContext('2d');
+  ac.clearRect(0, 0, aw, ah);
+  ac.beginPath();
+  ac.moveTo(aw / 2, 1);       // tip — top-center
+  ac.lineTo(1,      ah - 1);  // bottom-left
+  ac.lineTo(aw - 1, ah - 1);  // bottom-right
+  ac.closePath();
+  ac.fillStyle   = 'rgba(255,255,255,0.9)';
+  ac.strokeStyle = 'rgba(0,0,0,0.6)';
+  ac.lineWidth   = 1.5;
+  ac.fill(); ac.stroke();
+  map.addImage('displacement-arrow', ac.getImageData(0, 0, aw, ah));
+
+}
+
 // ── Map Component ──────────────────────────────────────────────────────────────
 
 export default function MapView({ tilesBase, ready }) {
@@ -194,6 +230,9 @@ export default function MapView({ tilesBase, ready }) {
 
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
 
+    // Re-add custom images whenever the style reloads (initial load + basemap switches).
+    map.on('style.load', () => addMapImages(map));
+
     map.on('load', () => {
       // ── OLR segment source ────────────────────────────────────────────────
       map.addSource('olr-segments', {
@@ -247,6 +286,21 @@ export default function MapView({ tilesBase, ready }) {
         },
       });
 
+      // ── Offset uncertainty caps (v3 [LB, UB] zone at path head/tail) ────
+      // Path is now trimmed at LB, so these caps sit at the very START/END of
+      // the solid path — no overlap.  Darker cyan dashes read as "same thing,
+      // but uncertain" without any z-order tricks.
+      map.addSource('offset-uncertainty', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({
+        id: 'offset-uncertainty-line', type: 'line', source: 'offset-uncertainty',
+        paint: {
+          'line-color':     '#0088bb',
+          'line-width':     5,
+          'line-opacity':   0.95,
+          'line-dasharray': [1, 0.5],
+        },
+      });
+
       // ── LRP marker source + layer ─────────────────────────────────────────
       map.addSource('lrp-markers', {
         type: 'geojson',
@@ -259,22 +313,52 @@ export default function MapView({ tilesBase, ready }) {
         source: 'lrp-markers',
         paint: {
           'circle-radius':       7,
-          'circle-color':        '#aa00ff',
+          'circle-color': [
+            'case',
+            ['==', ['get', 'index'], 0],                              '#00bb44', // first  → green
+            ['==', ['get', 'index'], ['-', ['get', 'total'], 1]],     '#ee2222', // last   → red
+            '#0088ff',                                                            // middle → blue
+          ],
           'circle-stroke-width': 2,
           'circle-stroke-color': '#ffffff',
         },
       });
 
-      // ── Offset uncertainty bands (v3 [lb, ub] zone at path head/tail) ────
-      map.addSource('offset-uncertainty', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-      map.addLayer({
-        id: 'offset-uncertainty-halo', type: 'line', source: 'offset-uncertainty',
-        paint: { 'line-color': '#ffcc00', 'line-width': 12, 'line-opacity': 0.35 },
+      // ── LRP snap displacement lines (encoded coord → snap point) ─────────
+      map.addSource('lrp-displacement', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
       });
       map.addLayer({
-        id: 'offset-uncertainty-dash', type: 'line', source: 'offset-uncertainty',
-        paint: { 'line-color': '#ffcc00', 'line-width': 4, 'line-opacity': 0.95, 'line-dasharray': [4, 3] },
+        id: 'lrp-displacement-line', type: 'line', source: 'lrp-displacement',
+        paint: {
+          'line-color':     '#000000',
+          'line-width':     1.5,
+          'line-opacity':   0.7,
+          'line-dasharray': [3, 4],
+        },
+      }, 'lrp-markers-circle');
+
+      // ── LRP snap arrowhead source (arrow tip at snap coord, rotated to LRP→snap bearing) ──
+      map.addSource('lrp-snap', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
       });
+
+      // ── Arrowhead at snap point (tip on road, shaft trailing toward LRP) ────
+      map.addLayer({
+        id: 'lrp-displacement-arrow', type: 'symbol', source: 'lrp-snap',
+        layout: {
+          'icon-image':             'displacement-arrow',
+          'icon-rotate':            ['get', 'bearing'],
+          'icon-rotation-alignment': 'map',
+          'icon-anchor':            'top',   // tip of arrow at snap coord; shaft trails back
+          'icon-size':              1.0,
+          'icon-allow-overlap':     true,
+          'icon-ignore-placement':  true,
+        },
+      }, 'lrp-markers-circle');
+
 
       // ── LRP bearing cone (shown when an LRP is selected) ─────────────────
       map.addSource('lrp-bearing', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
@@ -645,7 +729,15 @@ export default function MapView({ tilesBase, ready }) {
 
     const { lon, lat, index, frc, fow, lfrcnp, bearing_lb, bearing_ub } = traceLrpFocus;
     map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 15), duration: 500 });
-    setLrpInfo({ index, lat, lon, frc, fow, lfrcnp: lfrcnp ?? null, bearing_lb, bearing_ub });
+    // Enrich with snap info from decodeResult.lrps if available
+    const lrpData = decodeResult?.lrps?.[index] ?? {};
+    setLrpInfo({
+      index, lat, lon, frc, fow, lfrcnp: lfrcnp ?? null, bearing_lb, bearing_ub,
+      snap_lon: lrpData.snap_lon ?? null,
+      snap_lat: lrpData.snap_lat ?? null,
+      snap_is_endpoint: lrpData.snap_is_endpoint ?? null,
+      snap_distance_m: lrpData.snap_distance_m ?? null,
+    });
     setInfoProps(null);
     // Position popup near map center (LRP will fly there)
     setInfoAnchor({ x: map.getCanvas().clientWidth / 2, y: map.getCanvas().clientHeight / 2 });
@@ -661,8 +753,10 @@ export default function MapView({ tilesBase, ready }) {
     const src = map.getSource('lrp-bearing');
     if (!src) return;
     if (!lrpInfo) { src.setData({ type: 'FeatureCollection', features: [] }); return; }
-    const { lon, lat, bearing_lb, bearing_ub } = lrpInfo;
-    src.setData(bearingConeGeoJSON(lon, lat, bearing_lb, bearing_ub, searchRadiusM ?? 100));
+    const { lon, lat, snap_lon, snap_lat, bearing_lb, bearing_ub } = lrpInfo;
+    const coneLon = snap_lon ?? lon;
+    const coneLat = snap_lat ?? lat;
+    src.setData(bearingConeGeoJSON(coneLon, coneLat, bearing_lb, bearing_ub, searchRadiusM ?? 100));
   }, [lrpInfo, searchRadiusM]);
 
   // ── Segment layer visibility toggle ──────────────────────────────────────────
@@ -685,12 +779,17 @@ export default function MapView({ tilesBase, ready }) {
 
     const pathSource        = map.getSource('decoded-path');
     const lrpSource         = map.getSource('lrp-markers');
+    const snapSource        = map.getSource('lrp-snap');
+    const displSource       = map.getSource('lrp-displacement');
     const uncertaintySource = map.getSource('offset-uncertainty');
 
+    const emptyFC = { type: 'FeatureCollection', features: [] };
     if (!decodeResult) {
-      pathSource?.setData({ type: 'FeatureCollection', features: [] });
-      lrpSource?.setData({ type: 'FeatureCollection', features: [] });
-      uncertaintySource?.setData({ type: 'FeatureCollection', features: [] });
+      pathSource?.setData(emptyFC);
+      lrpSource?.setData(emptyFC);
+      snapSource?.setData(emptyFC);
+      displSource?.setData(emptyFC);
+      uncertaintySource?.setData(emptyFC);
       setInfoProps(null);
       setInfoAnchor(null);
       setLrpInfo(null);
@@ -705,13 +804,40 @@ export default function MapView({ tilesBase, ready }) {
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [lrp.lon, lrp.lat] },
         properties: {
-          index: idx, lat: lrp.lat, lon: lrp.lon,
+          index: idx, total: lrps.length, lat: lrp.lat, lon: lrp.lon,
           frc: lrp.frc, fow: lrp.fow,
           lfrcnp: lrp.lfrcnp ?? null,
           bearing_lb: lrp.bearing_lb, bearing_ub: lrp.bearing_ub,
+          snap_lon: lrp.snap_lon ?? null,
+          snap_lat: lrp.snap_lat ?? null,
+          snap_is_endpoint: lrp.snap_is_endpoint ?? null,
+          snap_distance_m: lrp.snap_distance_m ?? null,
         },
       })),
     });
+
+    // ── Snap markers and displacement lines ───────────────────────────────────
+    const snapFeatures = lrps
+      .filter(lrp => lrp.snap_lon != null)
+      .map((lrp, idx) => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [lrp.snap_lon, lrp.snap_lat] },
+        properties: {
+          index: idx,
+          is_endpoint: lrp.snap_is_endpoint ?? false,
+          bearing: compassBearing(lrp.lon, lrp.lat, lrp.snap_lon, lrp.snap_lat),
+        },
+      }));
+    snapSource?.setData({ type: 'FeatureCollection', features: snapFeatures });
+
+    const displFeatures = lrps
+      .filter(lrp => lrp.snap_lon != null)
+      .map((lrp, idx) => ({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [[lrp.lon, lrp.lat], [lrp.snap_lon, lrp.snap_lat]] },
+        properties: { index: idx },
+      }));
+    displSource?.setData({ type: 'FeatureCollection', features: displFeatures });
 
     // ── Decoded path — use WKT for correctly offset-trimmed display ───────────
     // Per-segment geometries span full segments and ignore arc-offset trim;
@@ -743,10 +869,9 @@ export default function MapView({ tilesBase, ready }) {
     }
     uncertaintySource?.setData({ type: 'FeatureCollection', features: uncertaintyFeatures });
 
-    // ── Fit camera — prefer path coords, fall back to LRP coords ─────────────
-    const fitCoords = wktCoords?.length
-      ? wktCoords
-      : lrps.map(l => [l.lon, l.lat]);
+    // ── Fit camera — always include all LRP positions AND the decoded path ──────
+    const lrpCoords = lrps.map(l => [l.lon, l.lat]);
+    const fitCoords = [...lrpCoords, ...(wktCoords ?? [])];
 
     if (fitCoords.length > 0) {
       const lngs = fitCoords.map(c => c[0]);
@@ -831,11 +956,23 @@ export default function MapView({ tilesBase, ready }) {
                   ['LFRCNP',  lrpInfo.lfrcnp !== null ? lrpInfo.lfrcnp : '— (last LRP)'],
                   ['Bearing', formatBearing(lrpInfo.bearing_lb, lrpInfo.bearing_ub)],
                 ].map(([k, v]) => (
-                  <tr key={k}>
-                    <td className="seg-info-key">{k}</td>
-                    <td><b>{v}</b></td>
-                  </tr>
+                  <tr key={k}><td className="seg-info-key">{k}</td><td><b>{v}</b></td></tr>
                 ))}
+                {lrpInfo.snap_lon != null && <>
+                  <tr><td className="seg-info-divider" colSpan={2} /></tr>
+                  <tr>
+                    <td className="seg-info-key">Snap</td>
+                    <td><b>{lrpInfo.snap_is_endpoint ? 'Endpoint' : 'Interior'}</b></td>
+                  </tr>
+                  <tr>
+                    <td className="seg-info-key">Displacement</td>
+                    <td><b>{Number(lrpInfo.snap_distance_m).toFixed(1)} m</b></td>
+                  </tr>
+                  <tr>
+                    <td className="seg-info-key">Snap coord</td>
+                    <td><b style={{fontSize:'11px'}}>{Number(lrpInfo.snap_lat).toFixed(6)}, {Number(lrpInfo.snap_lon).toFixed(6)}</b></td>
+                  </tr>
+                </>}
               </tbody>
             </table>
           </div>

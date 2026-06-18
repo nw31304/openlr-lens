@@ -60,6 +60,24 @@ Uses **Zustand**. All shared UI state lives here.
 | `traceHighlightSegIds` | `number[]` \| null | Segment IDs to highlight from TracePanel |
 | `traceLrpFocus` | `{lon, lat, index, …, _tick}` \| null | LRP to pan to (with `_tick` to allow re-click) |
 
+### Zustand `persist` and the `merge` function
+
+Params are persisted to `localStorage` under the key `openlrlens-settings`. The `persist`
+middleware uses a custom `merge` function so that new fields added to `PRESETS.Default` in
+a future release survive localStorage upgrades without reverting to `undefined`:
+
+```js
+merge: (persisted, current) => ({
+  ...current,
+  ...persisted,
+  params: { ...current.params, ...persisted.params },
+}),
+```
+
+This deep-merges `params`: persisted values win, but any field present in the current default
+and absent from the persisted object (e.g. a newly added field) falls back to the current
+default rather than being silently lost.
+
 ### Three module-level caches (not Zustand)
 
 These are plain `Map` instances at module scope in `store.js`, rebuilt on every decode:
@@ -114,10 +132,32 @@ Six GeoJSON sources, added on the `map.on('load')` callback:
 | Source | Layer(s) | Purpose |
 |---|---|---|
 | `olr-segments` | `olr-frc0` … `olr-frc7`, `olr-highlight` | All road segments, FRC-coloured; toggled by Segs button |
-| `decoded-path` | `decoded-path-line` | Decoded path segments (cyan, clickable) |
+| `decoded-path` | `decoded-path-line` | Solid decoded path (cyan), trimmed at `pos_offset_ub` / `neg_offset_ub` |
+| `decoded-path-uncertainty-pos` | `decoded-path-uncertainty-pos-line` | Dashed cyan uncertainty cap at path start: from `pos_offset_lb` to `pos_offset_ub` |
+| `decoded-path-uncertainty-neg` | `decoded-path-uncertainty-neg-line` | Dashed cyan uncertainty cap at path end: from `neg_offset_ub` to `neg_offset_lb` |
 | `lrp-markers` | `lrp-markers-circle` | LRP point markers (purple circles) |
 | `highlighted-segment` | `highlighted-segment-halo`, `highlighted-segment-line` | Segment highlighted from ResultPanel or TracePanel single click; animated pulse halo |
 | `trace-segment` | `trace-segment-halo`, `trace-segment-line` | Orange highlight driven by TracePanel segment buttons |
+
+### Offset uncertainty visualization
+
+The decoded path uses three geometrically non-overlapping segments to visualize v3 offset
+uncertainty:
+
+1. **Solid path** (`decoded-path`): the conservative result, trimmed at `pos_offset_ub`
+   forward and `neg_offset_ub` backward. This is the portion definitely inside the reference.
+2. **Positive cap** (`decoded-path-uncertainty-pos`): dashed line from `pos_offset_lb` to
+   `pos_offset_ub` at the path head — the uncertain "start" zone.
+3. **Negative cap** (`decoded-path-uncertainty-neg`): dashed line from `neg_offset_ub` to
+   `neg_offset_lb` at the path tail — the uncertain "end" zone.
+
+The dashes use `line-dasharray: [1, 0.5]` (dense short dashes) at `line-width: 2`.
+
+The three segments are geometrically non-overlapping by construction: the solid path starts
+where the positive cap ends (`pos_offset_ub`), and ends where the negative cap starts
+(`neg_offset_ub`). The WASM result carries both `wkt` (midpoint trim, for the midpoint
+estimate) and `conservative_wkt` (UB trim, for the solid portion). When no offsets are
+present, only the solid `decoded-path` source is populated.
 
 ### `olr-segments` — tile inspector layer
 
@@ -195,10 +235,18 @@ Contains:
 
 ## 8. Params panel (`ParamsPanel.jsx`)
 
-Shows all fields from `DecodeParams` as labelled inputs. Also renders two 8×8 penalty
-tables (`frc_penalty_table`, `fow_penalty_table`) as editable grids. Changes call
-`setParam(key, value)` or `setTableCell(tableKey, row, col, value)` on the store.
-Mutating any cell clears the preset name (shows "Custom").
+Shows all fields from `DecodeParams` as labelled inputs, including:
+- Spatial: `candidate_search_radius_m`, `snap_to_endpoint_threshold_m`
+- Weights: `distance_weight`, `bearing_weight`, `bearing_penalty_per_bucket`,
+  `frc_weight`, `fow_weight`, `interior_weight`, `wrong_endpoint_weight`
+- Hard gates: `max_bearing_deviation_deg`, `max_candidate_score`
+- Routing: `max_candidates_per_lrp`, `dnp_tolerance_pct`, `max_path_search_factor`,
+  `max_astar_expansions`, `lfrcnp_tolerance`
+- Trace: `trace_level` (Off / Summary / Full)
+
+Also renders two editable 8×8 penalty tables (`frc_penalty_table`, `fow_penalty_table`).
+Changes call `setParam(key, value)` or `setTableCell(tableKey, row, col, value)` on the
+store. Mutating any cell clears the preset name (shows "Custom").
 
 ---
 
@@ -218,6 +266,13 @@ in `Map.jsx` turns into a map highlight + camera pan.
 Shown when the `⚡` button is active. Draggable. Shows a structured view of the
 `decodeResult.trace.events` array.
 
+### Trace on decode failure
+
+When a decode fails, the WASM module now includes the partial trace in the error response
+(via `DecodeFailure` in the engine). The TracePanel renders normally even on failure — the
+user can inspect which candidates were found, which were rejected, and why. The Copy JSON
+button is enabled whenever `decodeResult` is non-null (success or failure).
+
 ### Event parsing (`parseTraceEvents`)
 
 Partitions the flat event list into:
@@ -233,6 +288,13 @@ Partitions the flat event list into:
 
 - **Candidates — LRP N**: accepted candidates ranked by score (lower = better). The
   top row has the `tp-best-row` style. Each candidate's Seg cell is a `SegBtn`.
+  Below the accepted table, a collapsible `RejectedTable` shows all rejected candidates
+  (expandable via "▸ N rejected" toggle). Each row shows: segment ID (`SegBtn`),
+  direction (Fwd/Bwd), distance, bearing, and a colour-coded gate-failure pill:
+  - `tp-gate-bearing` (amber): bearing deviation exceeded `max_bearing_deviation_deg`
+  - `tp-gate-radius` (yellow): outside `candidate_search_radius_m`
+  - `tp-gate-score` (purple): total score exceeded `max_candidate_score`
+  - `tp-gate-other` (grey): degenerate geometry (`FailDirection`)
 
 - **Routing — Leg N**: From/To segment buttons; path highlight button `[N segs]`;
   DNP check result. For direct-match legs (both LRPs on the same segment, DNP = 0),
@@ -243,6 +305,10 @@ Partitions the flat event list into:
 - **Offsets**: positive/negative trim values.
 
 - **Result**: success/failure, segment count, offset amounts, WKT preview.
+  The "Copy WKT" button uses `conservative_wkt ?? wkt` — the conservative (UB-trimmed)
+  path when offsets are present, otherwise the midpoint-trimmed path.
+  The "Copy JSON" button copies the full `decodeResult` (including partial trace on
+  failure) and is enabled whenever `decodeResult` is non-null.
 
 ### `SegBtn`
 
@@ -338,3 +404,8 @@ guard for intermediate trace events where the interval might differ.
 - **Popup position for trace highlights**: when a trace highlight hits multiple segments
   the popup is suppressed. For multi-segment path highlights a summary popup (total
   length, FRC range) would be useful.
+
+- **Rejected candidate `SegBtn` clicks**: clicking a rejected candidate's segment ID
+  in `RejectedTable` highlights the segment on the map. However, rejected candidates
+  may be outside the loaded tile region (the tile wasn't fetched because the segment
+  was beyond the search radius). In that case the highlight silently no-ops.
