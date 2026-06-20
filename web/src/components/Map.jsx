@@ -17,6 +17,7 @@ function popupStyle(anchor, w = 260, h = 200) {
   return { position: 'absolute', left: Math.max(margin, left), top: Math.max(margin, top), right: 'auto', bottom: 'auto' };
 }
 import { decodeTile } from '../tileDecoder.js';
+import { diagnoseSegment } from '../diagnosis.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -207,6 +208,7 @@ export default function MapView({ tilesBase, ready }) {
   const [candInfo, setCandInfo] = useState(null);
   const [candAnchor, setCandAnchor] = useState(null);
   const [basemap, setBasemap] = useState('liberty');
+  const [segDiagnosis, setSegDiagnosis] = useState(null);
 
   const { pos: lrpPos,  onMouseDown: lrpMouseDown,  resetPos: lrpResetPos  } = useDraggable(lrpPanelRef);
   const { pos: segPos,  onMouseDown: segMouseDown,  resetPos: segResetPos  } = useDraggable(segPanelRef);
@@ -699,6 +701,7 @@ export default function MapView({ tilesBase, ready }) {
     setInfoProps({ ...props, segment_id: segId >= 0 ? segId : null });
     setInfoAnchor({ x: e.point.x, y: e.point.y });
     setLrpInfo(null);
+    setSegDiagnosis(null);
     e.originalEvent.stopPropagation();
   }
 
@@ -1275,6 +1278,39 @@ export default function MapView({ tilesBase, ready }) {
               </tbody>
             </table>
           </div>
+          {decodeResult && !segDiagnosis && (
+            <button
+              className="seg-diag-btn"
+              onClick={() => setSegDiagnosis(diagnoseSegment(
+                infoProps.segment_id ?? null,
+                infoProps,
+                decodeResult,
+              ))}
+            >
+              Why didn't the location cover this segment?
+            </button>
+          )}
+          {segDiagnosis && (
+            <div className="seg-diag-body">
+              <div className="seg-diag-headline">{segDiagnosis.headline}</div>
+              {segDiagnosis.bullets.length > 0 && (
+                <ul className="seg-diag-list">
+                  {segDiagnosis.bullets.map((b, i) => <li key={i}>{b}</li>)}
+                </ul>
+              )}
+              {segDiagnosis.suggestions.length > 0 && (
+                <div className="seg-diag-suggestions">
+                  <span className="seg-diag-try">Try:</span>
+                  <ul className="seg-diag-list">
+                    {segDiagnosis.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+                  </ul>
+                </div>
+              )}
+              <button className="seg-diag-back" onClick={() => setSegDiagnosis(null)}>
+                ↩ Back
+              </button>
+            </div>
+          )}
         </div>
       )}
 

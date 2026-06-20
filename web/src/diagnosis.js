@@ -169,6 +169,157 @@ function diagnoseNoRoute(failedLeg, ranked, terminated, routeFailed) {
   };
 }
 
+// ── Segment coverage diagnosis ────────────────────────────────────────────────
+
+/**
+ * Explain why a specific map segment was not included in the decoded path.
+ *
+ * segId:      WASM segment_id integer, or null if the segment was not loaded
+ *             during the decode.
+ * segProps:   GeoJSON feature properties { frc, fow, direction, tile,
+ *             local_index, length_m }
+ * decodeResult: the full decode result object from the store.
+ *
+ * Returns { headline, bullets: string[], suggestions: string[] }.
+ */
+export function diagnoseSegment(segId, segProps, decodeResult) {
+  const lrps     = decodeResult?.lrps ?? [];
+  const segments = decodeResult?.segments ?? [];
+  const events   = decodeResult?.trace?.events ?? [];
+  const ofType   = (key) => events.filter(e => e[key] !== undefined).map(e => e[key]);
+
+  // Already in the decoded path?
+  const inPath = segments.some(
+    s => s.tile === segProps.tile && s.local_index === segProps.local_index
+  );
+  if (inPath) {
+    return {
+      headline: 'This segment is part of the decoded path.',
+      bullets: [],
+      suggestions: [],
+    };
+  }
+
+  const ranked  = ofType('CandidatesRanked');
+  const bullets = [];
+  const suggestions = [];
+
+  // ── Candidate search analysis ───────────────────────────────────────────────
+  const candidacies = [];
+  if (segId != null && ranked.length > 0) {
+    for (const ev of ranked) {
+      const accepted = ev.accepted?.find(c => c.segment_id === segId);
+      const rejected = ev.rejected?.find(c => c.segment_id === segId);
+      if (accepted || rejected) {
+        candidacies.push({ lrp_idx: ev.lrp_idx, accepted, rejected });
+      }
+    }
+  }
+
+  if (segId == null) {
+    bullets.push('Segment ID unavailable — run a decode first to enable full analysis.');
+  } else if (ranked.length === 0) {
+    bullets.push('No trace data. Re-decode with tracing enabled for a detailed explanation.');
+    suggestions.push('Use "Re-decode with tracing" in the result panel, then analyse again.');
+  } else if (candidacies.length === 0) {
+    bullets.push('This segment was not fetched during candidate search for any LRP.');
+    bullets.push('It lies outside the candidate search radius of all encoded LRPs.');
+    suggestions.push('Increase candidate search radius to capture more distant segments.');
+  } else {
+    for (const { lrp_idx, accepted, rejected } of candidacies) {
+      if (rejected) {
+        const reason = segVerdictReason(rejected.verdict);
+        bullets.push(`LRP ${lrp_idx}: rejected as candidate — ${reason ?? 'no specific reason recorded'}.`);
+        if (rejected.verdict?.FailBearing) {
+          suggestions.push('Increase max bearing deviation to allow this segment as a candidate.');
+        } else if (rejected.verdict?.FailScore) {
+          suggestions.push('Increase max candidate score threshold.');
+        } else if (rejected.verdict?.FailRadius) {
+          suggestions.push('Increase candidate search radius.');
+        }
+      } else if (accepted) {
+        const total = accepted.score?.total;
+        const scoreStr = total != null ? ` (score ${total.toFixed(4)})` : '';
+        bullets.push(
+          `LRP ${lrp_idx}: accepted as candidate${scoreStr} — a competing path scored lower and was chosen instead.`
+        );
+        if (accepted.score) {
+          const s = accepted.score;
+          const dominant = [
+            s.bearing_score        > 0.05 ? `bearing ${s.bearing_score.toFixed(3)}`       : null,
+            s.frc_score            > 0.05 ? `FRC ${s.frc_score.toFixed(3)}`               : null,
+            s.fow_score            > 0.05 ? `FOW ${s.fow_score.toFixed(3)}`               : null,
+            s.distance_score       > 0.05 ? `distance ${s.distance_score.toFixed(3)}`     : null,
+            s.wrong_endpoint_score > 0.05 ? `wrong-EP ${s.wrong_endpoint_score.toFixed(3)}` : null,
+            s.interior_score       > 0.05 ? `interior ${s.interior_score.toFixed(3)}`     : null,
+          ].filter(Boolean);
+          if (dominant.length > 0) {
+            bullets.push(`Penalty contributors: ${dominant.join(', ')}.`);
+          }
+        }
+        suggestions.push('Adjust scoring weights (FRC, FOW, bearing) to favour this segment\'s attributes.');
+      }
+    }
+  }
+
+  // ── Static FRC routing constraint ──────────────────────────────────────────
+  const segFrc = segProps.frc != null ? parseInt(segProps.frc, 10) : null;
+  if (segFrc != null) {
+    const frcBlocked = [];
+    for (let i = 0; i < lrps.length - 1; i++) {
+      const lfrcnp = lrps[i].lfrcnp;
+      if (lfrcnp != null && segFrc > lfrcnp) {
+        frcBlocked.push(`leg ${i} (LFRCNP ${lfrcnp})`);
+      }
+    }
+    if (frcBlocked.length > 0) {
+      bullets.push(`FRC ${segFrc} exceeds the LFRCNP routing floor for ${frcBlocked.join(', ')} — A* cannot route through this segment on those legs.`);
+      suggestions.push('The encoded LFRCNP may be too restrictive for this road class.');
+    }
+  }
+
+  // ── Direction note ──────────────────────────────────────────────────────────
+  const dir = segProps.direction;
+  if (dir && dir !== 'Both' && dir !== 'BOTH') {
+    bullets.push(`One-way segment (${dir}) — only valid in one traversal direction.`);
+  }
+
+  // ── Full trace: AStarEdgeSkipped ────────────────────────────────────────────
+  const edgeSkipped = ofType('AStarEdgeSkipped');
+  if (segId != null && edgeSkipped.length > 0) {
+    const skips = edgeSkipped.filter(e => e.segment_id === segId);
+    if (skips.length > 0) {
+      const reasons = [...new Set(skips.map(e => e.reason ?? 'unknown'))];
+      bullets.push(
+        `A* explicitly skipped this segment ${skips.length} time${skips.length > 1 ? 's' : ''} during routing: ${reasons.join(', ')}.`
+      );
+    }
+  }
+
+  if (bullets.length === 0) {
+    bullets.push('No trace data available for detailed analysis.');
+    if (!decodeResult?.trace) {
+      suggestions.push('Re-decode with tracing enabled for more detail.');
+    }
+  }
+
+  const headline = candidacies.some(c => c.accepted)  ? 'Candidate evaluated — not selected on best path'
+    : candidacies.some(c => c.rejected) ? 'Candidate rejected during LRP matching'
+    : segId != null && ranked.length > 0 ? 'Outside candidate search area for all LRPs'
+    : 'Segment not evaluated';
+
+  return { headline, bullets, suggestions: [...new Set(suggestions)] };
+}
+
+function segVerdictReason(verdict) {
+  if (!verdict || verdict === 'Pass') return null;
+  if (verdict === 'FailDirection') return 'degenerate geometry';
+  if (verdict.FailRadius)  return `outside search radius (${(verdict.FailRadius.distance_m ?? 0).toFixed(0)} m from LRP)`;
+  if (verdict.FailBearing) return `bearing gate — ${(verdict.FailBearing.excess_deg ?? 0).toFixed(1)}° outside the tolerance`;
+  if (verdict.FailScore)   return `candidate score too high (${(verdict.FailScore.total ?? 0).toFixed(4)})`;
+  return String(verdict);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function rejectionBreakdown(rejected) {
