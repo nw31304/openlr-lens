@@ -61,13 +61,13 @@ export default function TopBar() {
           <div className="gear-panel">
             <div className="gear-row">
               <span>Road segments</span>
-              <button className={`gear-toggle${showSegmentLayer ? ' on' : ''}`} onClick={toggleSegmentLayer}>
+              <button className={`gear-toggle${showSegmentLayer ? ' on' : ''}`} onClick={() => { toggleSegmentLayer(); setShowGear(false); }}>
                 {showSegmentLayer ? 'On' : 'Off'}
               </button>
             </div>
             <div className="gear-row">
               <span>Decode trace</span>
-              <button className={`gear-toggle${showTrace ? ' on' : ''}`} onClick={toggleTrace}>
+              <button className={`gear-toggle${showTrace ? ' on' : ''}`} onClick={() => { toggleTrace(); setShowGear(false); }}>
                 {showTrace ? 'On' : 'Off'}
               </button>
             </div>
@@ -78,7 +78,7 @@ export default function TopBar() {
                   <button
                     key={lvl}
                     className={`gear-level-btn${traceLevel === lvl ? ' active' : ''}`}
-                    onClick={() => setTraceLevel(lvl)}
+                    onClick={() => { setTraceLevel(lvl); setShowGear(false); }}
                   >{lvl}</button>
                 ))}
               </div>

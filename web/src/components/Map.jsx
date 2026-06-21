@@ -64,6 +64,7 @@ const CUSTOM_SOURCES = new Set([
   'lrp-snap', 'lrp-displacement',
   'offset-uncertainty', 'lrp-bearing', 'highlighted-segment', 'trace-segment',
   'replay-radius', 'replay-route', 'replay-candidates', 'replay-cloud', 'replay-frontier', 'replay-leg', 'replay-flash',
+  'measure-line', 'measure-points',
 ]);
 const CUSTOM_LAYER_IDS = new Set([
   'olr-frc0','olr-frc1','olr-frc2','olr-frc3','olr-frc4','olr-frc5','olr-frc6','olr-frc7',
@@ -80,6 +81,7 @@ const CUSTOM_LAYER_IDS = new Set([
   'replay-frontier-circle',
   'replay-leg-from', 'replay-leg-to',
   'replay-flash-ring',
+  'measure-line-layer', 'measure-points-layer',
 ]);
 
 const FRC_COLOR = ['#e8002d', '#ff7700', '#e8c800', '#00aa44',
@@ -157,6 +159,20 @@ function compassBearing(lon1, lat1, lon2, lat2) {
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 
+function haversineM(lon1, lat1, lon2, lat2) {
+  const R = 6371000;
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function fmtDist(m) {
+  if (m < 1000) return `${Math.round(m)} m`;
+  return `${(m / 1000).toFixed(2)} km`;
+}
+
 // ── Custom marker images ──────────────────────────────────────────────────────
 
 function addMapImages(map) {
@@ -209,6 +225,12 @@ export default function MapView({ tilesBase, ready }) {
   const [candAnchor, setCandAnchor] = useState(null);
   const [basemap, setBasemap] = useState('liberty');
   const [segDiagnosis, setSegDiagnosis] = useState(null);
+
+  const [measuring, setMeasuring] = useState(false);
+  const [measurePts, setMeasurePts] = useState([]);
+  const [measureCursor, setMeasureCursor] = useState(null);
+  const measuringRef  = useRef(false);
+  const measurePtsRef = useRef([]);
 
   const { pos: lrpPos,  onMouseDown: lrpMouseDown,  resetPos: lrpResetPos  } = useDraggable(lrpPanelRef);
   const { pos: segPos,  onMouseDown: segMouseDown,  resetPos: segResetPos  } = useDraggable(segPanelRef);
@@ -594,16 +616,43 @@ export default function MapView({ tilesBase, ready }) {
         },
       });
 
+      // ── Measurement tool sources + layers ────────────────────────────────
+      const emptyFC2 = { type: 'FeatureCollection', features: [] };
+      map.addSource('measure-line',   { type: 'geojson', data: emptyFC2 });
+      map.addSource('measure-points', { type: 'geojson', data: emptyFC2 });
+      map.addLayer({
+        id: 'measure-line-layer', type: 'line', source: 'measure-line',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color':     '#ffffff',
+          'line-width':     2,
+          'line-dasharray': [4, 4],
+          'line-opacity':   0.9,
+        },
+      });
+      map.addLayer({
+        id: 'measure-points-layer', type: 'circle', source: 'measure-points',
+        paint: {
+          'circle-radius':       5,
+          'circle-color':        '#ffffff',
+          'circle-stroke-color': '#333333',
+          'circle-stroke-width': 1.5,
+        },
+      });
+
       // ── Click handlers ────────────────────────────────────────────────────
+      const pointerOn  = () => { if (!measuringRef.current) map.getCanvas().style.cursor = 'pointer'; };
+      const pointerOff = () => { if (!measuringRef.current) map.getCanvas().style.cursor = ''; };
+
       for (let frc = 0; frc < 8; frc++) {
         map.on('click', `olr-frc${frc}`, onSegmentClick);
-        map.on('mouseenter', `olr-frc${frc}`, () => map.getCanvas().style.cursor = 'pointer');
-        map.on('mouseleave', `olr-frc${frc}`, () => map.getCanvas().style.cursor = '');
+        map.on('mouseenter', `olr-frc${frc}`, pointerOn);
+        map.on('mouseleave', `olr-frc${frc}`, pointerOff);
       }
 
       map.on('click', 'lrp-markers-circle', onLrpClick);
-      map.on('mouseenter', 'lrp-markers-circle', () => map.getCanvas().style.cursor = 'pointer');
-      map.on('mouseleave', 'lrp-markers-circle', () => map.getCanvas().style.cursor = '');
+      map.on('mouseenter', 'lrp-markers-circle', pointerOn);
+      map.on('mouseleave', 'lrp-markers-circle', pointerOff);
 
       map.on('click', 'replay-candidates-circle', (e) => {
         const props = e.features?.[0]?.properties;
@@ -612,12 +661,12 @@ export default function MapView({ tilesBase, ready }) {
         setCandAnchor({ x: e.point.x, y: e.point.y });
         e.stopPropagation?.();
       });
-      map.on('mouseenter', 'replay-candidates-circle', () => map.getCanvas().style.cursor = 'pointer');
-      map.on('mouseleave', 'replay-candidates-circle', () => map.getCanvas().style.cursor = '');
+      map.on('mouseenter', 'replay-candidates-circle', pointerOn);
+      map.on('mouseleave', 'replay-candidates-circle', pointerOff);
 
       map.on('click', 'decoded-path-line', onDecodedPathClick);
-      map.on('mouseenter', 'decoded-path-line', () => map.getCanvas().style.cursor = 'pointer');
-      map.on('mouseleave', 'decoded-path-line', () => map.getCanvas().style.cursor = '');
+      map.on('mouseenter', 'decoded-path-line', pointerOn);
+      map.on('mouseleave', 'decoded-path-line', pointerOff);
 
       map.on('click', onMapClick);
 
@@ -728,6 +777,14 @@ export default function MapView({ tilesBase, ready }) {
   // ── Click interaction ────────────────────────────────────────────────────────
 
   function onSegmentClick(e) {
+    if (measuringRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = [...measurePtsRef.current, pt];
+      measurePtsRef.current = next;
+      setMeasurePts(next);
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (!e.features?.length) return;
     const props = e.features[0].properties;
     const [z, x, y] = props.tile.split('/').map(Number);
@@ -741,6 +798,14 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onDecodedPathClick(e) {
+    if (measuringRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = [...measurePtsRef.current, pt];
+      measurePtsRef.current = next;
+      setMeasurePts(next);
+      e.originalEvent.stopPropagation();
+      return;
+    }
     e.originalEvent.stopPropagation();
     const segments = decodeResultRef.current?.segments;
     if (!segments?.length) return;
@@ -775,6 +840,14 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onLrpClick(e) {
+    if (measuringRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = [...measurePtsRef.current, pt];
+      measurePtsRef.current = next;
+      setMeasurePts(next);
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (!e.features?.length) return;
     setLrpInfo(e.features[0].properties);
     setInfoAnchor({ x: e.point.x, y: e.point.y });
@@ -784,6 +857,13 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onMapClick(e) {
+    if (measuringRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = [...measurePtsRef.current, pt];
+      measurePtsRef.current = next;
+      setMeasurePts(next);
+      return;
+    }
     const layerIds = [...Array.from({ length: 8 }, (_, i) => `olr-frc${i}`), 'lrp-markers-circle', 'decoded-path-line'];
     const hits = mapRef.current.queryRenderedFeatures(e.point, { layers: layerIds });
     if (hits.length > 0) return;
@@ -1296,6 +1376,88 @@ export default function MapView({ tilesBase, ready }) {
     }
   }, [decodeResult]);
 
+  // ── Measurement tool ──────────────────────────────────────────────────────────
+
+  function toggleMeasure() {
+    if (measuringRef.current) {
+      measuringRef.current = false;
+      measurePtsRef.current = [];
+      setMeasuring(false);
+      setMeasurePts([]);
+      setMeasureCursor(null);
+    } else {
+      measuringRef.current = true;
+      measurePtsRef.current = [];
+      setMeasuring(true);
+      setMeasurePts([]);
+    }
+  }
+
+  // Activate/deactivate measure mode: cursor, mousemove, dblclick.
+  useEffect(() => {
+    measuringRef.current = measuring;
+    const map = mapRef.current;
+    if (!map) return;
+    if (!measuring) {
+      map.getCanvas().style.cursor = '';
+      return;
+    }
+    map.getCanvas().style.cursor = 'crosshair';
+    map.doubleClickZoom.disable();
+
+    const onMove = (e) => setMeasureCursor([e.lngLat.lng, e.lngLat.lat]);
+    const onDblClick = () => {
+      // The second click of the dblclick already added a point via onMapClick;
+      // remove that spurious duplicate and finish.
+      const trimmed = measurePtsRef.current.slice(0, -1);
+      measurePtsRef.current = trimmed;
+      setMeasurePts([...trimmed]);
+      measuringRef.current = false;
+      setMeasuring(false);
+      setMeasureCursor(null);
+    };
+
+    map.on('mousemove', onMove);
+    map.on('dblclick', onDblClick);
+    return () => {
+      map.off('mousemove', onMove);
+      map.off('dblclick', onDblClick);
+      map.doubleClickZoom.enable();
+      if (!measuringRef.current) map.getCanvas().style.cursor = '';
+    };
+  }, [measuring]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Escape cancels measurement.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape' && measuringRef.current) {
+        measuringRef.current = false;
+        measurePtsRef.current = [];
+        setMeasuring(false);
+        setMeasurePts([]);
+        setMeasureCursor(null);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Sync measure GeoJSON sources whenever points or cursor change.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getSource('measure-line')) return;
+    const pts = measureCursor ? [...measurePts, measureCursor] : measurePts;
+    const lineData = pts.length >= 2
+      ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'LineString', coordinates: pts }, properties: {} }] }
+      : { type: 'FeatureCollection', features: [] };
+    const pointsData = {
+      type: 'FeatureCollection',
+      features: measurePts.map(pt => ({ type: 'Feature', geometry: { type: 'Point', coordinates: pt }, properties: {} })),
+    };
+    map.getSource('measure-line').setData(lineData);
+    map.getSource('measure-points').setData(pointsData);
+  }, [measurePts, measureCursor]);
+
   // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
@@ -1457,6 +1619,38 @@ export default function MapView({ tilesBase, ready }) {
           ))}
         </div>
       )}
+
+      {/* Measure tool button */}
+      <button
+        className={`measure-btn${measuring ? ' active' : ''}`}
+        onClick={toggleMeasure}
+        title={measuring ? 'Cancel measurement (Esc)' : measurePts.length > 0 ? 'Clear measurement' : 'Measure distance'}
+      >📏</button>
+
+      {/* Measure distance panel */}
+      {(measuring || measurePts.length > 0) && (() => {
+        const total = measurePts.reduce((sum, pt, i) =>
+          i === 0 ? 0 : sum + haversineM(measurePts[i-1][0], measurePts[i-1][1], pt[0], pt[1]), 0);
+        const pending = measuring && measureCursor && measurePts.length > 0
+          ? haversineM(measurePts[measurePts.length-1][0], measurePts[measurePts.length-1][1], measureCursor[0], measureCursor[1])
+          : null;
+        return (
+          <div className="measure-panel">
+            {measurePts.length === 0 && <span className="measure-hint">Click to start</span>}
+            {measurePts.length === 1 && pending == null && <span className="measure-hint">Click to add points</span>}
+            {measurePts.length >= 2 && <span className="measure-total">{fmtDist(total)}</span>}
+            {pending != null && (
+              <span className="measure-pending">
+                {measurePts.length >= 2 ? ' + ' : ''}{fmtDist(pending)}
+                {measurePts.length >= 2 && <span className="measure-grand"> = {fmtDist(total + pending)}</span>}
+              </span>
+            )}
+            {measuring && measurePts.length >= 1 && (
+              <span className="measure-hint"> · dbl-click to finish</span>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Basemap selector */}
       <div className="basemap-selector">
