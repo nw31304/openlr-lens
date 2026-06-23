@@ -19,6 +19,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use duckdb::{params, Connection};
+use indicatif::{ProgressBar, ProgressStyle};
 use osmpbf::{Element, ElementReader, RelMemberType};
 use tracing::{info, warn};
 
@@ -243,6 +244,33 @@ fn build_lm_tile_payload(
     payload
 }
 
+// ── Progress bar helpers ──────────────────────────────────────────────────────
+
+fn make_spinner(show: bool, msg: &'static str) -> ProgressBar {
+    if !show { return ProgressBar::hidden(); }
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg} [{elapsed_precise}] {human_pos}")
+            .expect("valid template"),
+    );
+    pb.set_message(msg);
+    pb
+}
+
+fn make_bar(show: bool, total: u64, msg: &'static str) -> ProgressBar {
+    if !show { return ProgressBar::hidden(); }
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{msg:32} [{bar:40.cyan/blue}] {human_pos}/{human_len}  eta {eta}")
+            .expect("valid template")
+            .progress_chars("█▉▊▋▌▍▎▏ "),
+    );
+    pb.set_message(msg);
+    pb
+}
+
 // ── DuckDB setup ──────────────────────────────────────────────────────────────
 
 fn setup_duckdb(memory_mb_override: Option<u64>) -> Result<Connection> {
@@ -321,7 +349,9 @@ fn flush_way_batch(
     Ok(())
 }
 
-fn extract_pass1(pbf_path: &Path, schema: &OsmSchemaMapping, conn: &Connection) -> Result<usize> {
+fn extract_pass1(pbf_path: &Path, schema: &OsmSchemaMapping, conn: &Connection, show_progress: bool) -> Result<usize> {
+    let pb = make_spinner(show_progress, "Pass 1/2  scanning ways ");
+    let mut ways_scanned: u64 = 0;
 
     let reader = ElementReader::from_path(pbf_path)?;
 
@@ -388,6 +418,10 @@ fn extract_pass1(pbf_path: &Path, schema: &OsmSchemaMapping, conn: &Connection) 
                 }
 
                 way_batch.push(WayRecord { id: w.id(), frc, fow, direction, node_ids: node_ids_to_blob(&node_ids) });
+                ways_scanned += 1;
+                if ways_scanned % (WAY_BATCH as u64) == 0 {
+                    pb.set_position(ways_scanned);
+                }
 
                 if way_batch.len() >= WAY_BATCH {
                     if let Err(e) = flush_way_batch(conn, &mut way_batch, &mut delta_batch) {
@@ -461,6 +495,7 @@ fn extract_pass1(pbf_path: &Path, schema: &OsmSchemaMapping, conn: &Connection) 
     let restr_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM restrictions_raw", [], |r| r.get(0))
         .context("count restrictions")?;
+    pb.finish_and_clear();
     info!(ways = way_count, node_ref_deltas = delta_count, restrictions = restr_count,
           "Pass 1 complete");
     Ok(way_count as usize)
@@ -491,7 +526,9 @@ fn compute_derived_tables(conn: &Connection) -> Result<usize> {
 
 // ── Phase 2: Extract node coordinates ─────────────────────────────────────────
 
-fn extract_pass2(pbf_path: &Path, conn: &Connection) -> Result<usize> {
+fn extract_pass2(pbf_path: &Path, conn: &Connection, show_progress: bool) -> Result<usize> {
+    let pb = make_spinner(show_progress, "Pass 2/2  scanning nodes");
+    let mut nodes_scanned: u64 = 0;
     // Staging table for batch semi-joins.
     conn.execute_batch(
         "CREATE TEMP TABLE _node_staging (id BIGINT, lon DOUBLE, lat DOUBLE)"
@@ -510,6 +547,10 @@ fn extract_pass2(pbf_path: &Path, conn: &Connection) -> Result<usize> {
             _ => return,
         };
         batch.push((id, lon, lat));
+        nodes_scanned += 1;
+        if nodes_scanned % (NODE_BATCH as u64) == 0 {
+            pb.set_position(nodes_scanned);
+        }
         if batch.len() >= NODE_BATCH {
             if let Err(e) = flush_node_batch(conn, &mut batch) {
                 err = Some(e);
@@ -524,6 +565,7 @@ fn extract_pass2(pbf_path: &Path, conn: &Connection) -> Result<usize> {
     let stored: i64 = conn
         .query_row("SELECT COUNT(*) FROM node_coords", [], |r| r.get(0))
         .context("count node_coords")?;
+    pb.finish_and_clear();
     info!(nodes_loaded = stored, "Pass 2 complete");
     Ok(stored as usize)
 }
@@ -626,7 +668,7 @@ fn apply_bbox_filter(bbox: Bbox, conn: &Connection) -> Result<()> {
 
 // ── Phase 3: Adapt + split + quantize ─────────────────────────────────────────
 
-pub(crate) fn adapt_split_quantize(conn: &Connection, tile_zoom: u8) -> Result<usize> {
+pub(crate) fn adapt_split_quantize(conn: &Connection, tile_zoom: u8, show_progress: bool) -> Result<usize> {
     // Build indexes for fast coord and intersection lookups.
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_nc ON node_coords(id); \
@@ -635,12 +677,12 @@ pub(crate) fn adapt_split_quantize(conn: &Connection, tile_zoom: u8) -> Result<u
     .context("create adapt indexes")?;
 
     let way_count: i64 = conn.query_row("SELECT COUNT(*) FROM ways", [], |r| r.get(0))?;
+    let pb = make_bar(show_progress, way_count as u64, "Adapt/split/quantize");
     let mut edge_idx: u32 = 0;
     let mut offset: i64  = 0;
 
-    // Track unique nodes (GERS → (lon_e7, lat_e7, tile_x, tile_y)) — deduplicate across batches.
-    // We INSERT OR IGNORE into q_nodes using a DuckDB ON CONFLICT clause isn't available,
-    // so track seen nodes in a local HashSet to avoid duplicate inserts.
+    // Track unique nodes — deduplicate across batches via a local HashSet to avoid
+    // duplicate inserts (DuckDB has no INSERT OR IGNORE / ON CONFLICT DO NOTHING).
     let mut seen_nodes: HashSet<[u8; 16]> = HashSet::new();
 
     while offset < way_count {
@@ -758,7 +800,9 @@ pub(crate) fn adapt_split_quantize(conn: &Connection, tile_zoom: u8) -> Result<u
             }
         }
 
-        offset += batch.len() as i64;
+        let batch_len = batch.len() as i64;
+        offset += batch_len;
+        pb.inc(batch_len as u64);
         if offset % 50_000 == 0 {
             info!(progress = offset, way_count, edges = edge_idx, "adapt+split progress");
         }
@@ -794,6 +838,7 @@ pub(crate) fn adapt_split_quantize(conn: &Connection, tile_zoom: u8) -> Result<u
     )
     .context("adapt stage indexes")?;
 
+    pb.finish_and_clear();
     info!(edges = edge_idx, nodes = seen_nodes.len(), restrictions = restr_count,
           "adapt+split+quantize complete");
     Ok(edge_idx as usize)
@@ -867,6 +912,7 @@ pub(crate) fn tile_from_duckdb(
     output_dir: &Path,
     extent_slug: &str,
     release_label: &str,
+    show_progress: bool,
 ) -> Result<()> {
     // ── Load all nodes into RAM ───────────────────────────────────────────────
     // For Europe this is ~20 M nodes × (16+8+4+4) bytes ≈ 640 MB.  Acceptable.
@@ -995,6 +1041,7 @@ pub(crate) fn tile_from_duckdb(
     let mut writer = StreamingWriter::new().context("create StreamingWriter")?;
 
     let total_tiles = tile_keys.len();
+    let pb = make_bar(show_progress, total_tiles as u64, "Tiling              ");
     let mut done_tiles = 0usize;
 
     for (tile_x, tile_y) in &tile_keys {
@@ -1060,11 +1107,13 @@ pub(crate) fn tile_from_duckdb(
         writer.add_tile(tile_id, &payload).context("add_tile")?;
 
         done_tiles += 1;
+        pb.inc(1);
         if done_tiles % 10_000 == 0 {
             info!(done = done_tiles, total = total_tiles, "tiling progress");
         }
     }
 
+    pb.finish_and_clear();
     writer.finish(&archive_path, tile_zoom).context("finish PMTiles")?;
     info!(path = %archive_path.display(), tiles = total_tiles, "PMTiles archive written");
 
@@ -1174,13 +1223,14 @@ pub fn run_pipeline(
     release_label:    &str,
     tile_zoom:        u8,
     duckdb_memory_mb: Option<u64>,
+    show_progress:    bool,
 ) -> Result<()> {
     std::fs::create_dir_all(output_dir)?;
     let conn = setup_duckdb(duckdb_memory_mb)?;
 
     // Phase 1: extract ways and relations.
     info!("low-memory: Pass 1 — extract ways");
-    extract_pass1(pbf_path, schema, &conn)?;
+    extract_pass1(pbf_path, schema, &conn, show_progress)?;
 
     // Build intersection_nodes and unique_refs.
     info!("low-memory: computing intersection nodes");
@@ -1188,7 +1238,7 @@ pub fn run_pipeline(
 
     // Phase 2: extract node coordinates.
     info!("low-memory: Pass 2 — extract node coordinates");
-    extract_pass2(pbf_path, &conn)?;
+    extract_pass2(pbf_path, &conn, show_progress)?;
 
     // Optional bbox filter.
     if let Some(b) = bbox {
@@ -1198,11 +1248,11 @@ pub fn run_pipeline(
 
     // Phase 3: adapt + split + quantize.
     info!("low-memory: adapt + split + quantize");
-    adapt_split_quantize(&conn, tile_zoom)?;
+    adapt_split_quantize(&conn, tile_zoom, show_progress)?;
 
     // Phase 4: tile and write PMTiles.
     info!("low-memory: tiling");
-    tile_from_duckdb(&conn, tile_zoom, output_dir, extent_slug, release_label)?;
+    tile_from_duckdb(&conn, tile_zoom, output_dir, extent_slug, release_label, show_progress)?;
 
     Ok(())
 }

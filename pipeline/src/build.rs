@@ -29,6 +29,7 @@ pub async fn run_osm(
     tile_zoom:        u8,
     low_memory:       bool,
     duckdb_memory_mb: Option<u64>,
+    show_progress:    bool,
 ) -> Result<()> {
     std::fs::create_dir_all(output)?;
     let t0 = Instant::now();
@@ -65,6 +66,7 @@ pub async fn run_osm(
                 &release_lm,
                 tile_zoom,
                 duckdb_memory_mb,
+                show_progress,
             )
         })
         .await

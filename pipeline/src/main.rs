@@ -108,6 +108,7 @@ async fn main() -> Result<()> {
                             args.tile_zoom,
                             args.low_memory,
                             args.duckdb_memory_mb,
+                            args.progress,
                         )
                         .await?;
                     }

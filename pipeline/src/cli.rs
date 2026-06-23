@@ -125,6 +125,11 @@ pub struct BuildArgs {
     /// RAM and spill less to disk, reducing build time.
     #[arg(long, requires = "low_memory")]
     pub duckdb_memory_mb: Option<u64>,
+
+    /// Show indicatif progress bars for each pipeline stage.
+    /// Silent by default; pass this flag for interactive builds.
+    #[arg(long)]
+    pub progress: bool,
 }
 
 #[derive(clap::Args)]

@@ -28,3 +28,4 @@ urlencoding      = "2"
 flate2           = "1"
 sysinfo          = { version = "0.30", default-features = false }
 osmpbf           = "0.3"
+indicatif        = "0.17"
