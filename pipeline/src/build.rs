@@ -21,13 +21,14 @@ use crate::{
 /// `osm_extract::extract` + `osm_adapt::adapt` which produce split edges,
 /// nodes, and restrictions directly from OSM tags.
 pub async fn run_osm(
-    pbf_path:    &Path,
-    extent_spec: &str,
-    bbox:        Option<Bbox>,
-    osm_schema:  &OsmSchemaMapping,
-    output:      &Path,
-    tile_zoom:   u8,
-    low_memory:  bool,
+    pbf_path:         &Path,
+    extent_spec:      &str,
+    bbox:             Option<Bbox>,
+    osm_schema:       &OsmSchemaMapping,
+    output:           &Path,
+    tile_zoom:        u8,
+    low_memory:       bool,
+    duckdb_memory_mb: Option<u64>,
 ) -> Result<()> {
     std::fs::create_dir_all(output)?;
     let t0 = Instant::now();
@@ -63,6 +64,7 @@ pub async fn run_osm(
                 &extent_slug,
                 &release_lm,
                 tile_zoom,
+                duckdb_memory_mb,
             )
         })
         .await

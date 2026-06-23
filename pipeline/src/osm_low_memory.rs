@@ -245,11 +245,16 @@ fn build_lm_tile_payload(
 
 // ── DuckDB setup ──────────────────────────────────────────────────────────────
 
-fn setup_duckdb() -> Result<Connection> {
-    let avail = available_ram_bytes();
-    // Leave ~60 % of currently-free RAM for other pipeline work; floor at 1 GB.
-    let limit_mb = ((avail as f64 * 0.40) / 1_048_576.0) as u64;
-    let limit_mb = limit_mb.max(1_024);
+fn setup_duckdb(memory_mb_override: Option<u64>) -> Result<Connection> {
+    let limit_mb = match memory_mb_override {
+        Some(mb) => mb,
+        None => {
+            let avail = available_ram_bytes();
+            // Default: 40 % of currently available RAM, floor 1 GB.
+            let mb = ((avail as f64 * 0.40) / 1_048_576.0) as u64;
+            mb.max(1_024)
+        }
+    };
 
     let conn = Connection::open_in_memory().context("open DuckDB")?;
     conn.execute_batch(&format!(
@@ -1161,16 +1166,17 @@ fn write_lm_manifest(
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub fn run_pipeline(
-    pbf_path:      &Path,
-    bbox:          Option<Bbox>,
-    schema:        &OsmSchemaMapping,
-    output_dir:    &Path,
-    extent_slug:   &str,
-    release_label: &str,
-    tile_zoom:     u8,
+    pbf_path:         &Path,
+    bbox:             Option<Bbox>,
+    schema:           &OsmSchemaMapping,
+    output_dir:       &Path,
+    extent_slug:      &str,
+    release_label:    &str,
+    tile_zoom:        u8,
+    duckdb_memory_mb: Option<u64>,
 ) -> Result<()> {
     std::fs::create_dir_all(output_dir)?;
-    let conn = setup_duckdb()?;
+    let conn = setup_duckdb(duckdb_memory_mb)?;
 
     // Phase 1: extract ways and relations.
     info!("low-memory: Pass 1 — extract ways");

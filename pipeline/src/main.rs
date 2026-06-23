@@ -107,6 +107,7 @@ async fn main() -> Result<()> {
                             &args.output,
                             args.tile_zoom,
                             args.low_memory,
+                            args.duckdb_memory_mb,
                         )
                         .await?;
                     }

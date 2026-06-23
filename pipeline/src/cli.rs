@@ -118,6 +118,13 @@ pub struct BuildArgs {
     /// to I/O overhead on the tile stage.
     #[arg(long)]
     pub low_memory: bool,
+
+    /// Override the DuckDB memory limit (MiB) used by --low-memory.
+    /// If omitted, defaults to 40% of currently available RAM.
+    /// Increase this (e.g. --duckdb-memory-mb 12000) to let DuckDB use more
+    /// RAM and spill less to disk, reducing build time.
+    #[arg(long, requires = "low_memory")]
+    pub duckdb_memory_mb: Option<u64>,
 }
 
 #[derive(clap::Args)]
