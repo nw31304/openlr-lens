@@ -47,6 +47,28 @@ pub async fn run_osm(
         "OSM build started"
     );
 
+    // Low-memory path: hand off entirely to the DuckDB-backed pipeline.
+    if low_memory {
+        let pbf_path    = pbf_path.to_path_buf();
+        let schema_lm   = osm_schema.clone();
+        let output_dir  = output.to_path_buf();
+        let extent_slug = extent_slug.clone();
+        let release_lm  = release_label.to_string();
+        return tokio::task::spawn_blocking(move || {
+            crate::osm_low_memory::run_pipeline(
+                &pbf_path,
+                bbox,
+                &schema_lm,
+                &output_dir,
+                &extent_slug,
+                &release_lm,
+                tile_zoom,
+            )
+        })
+        .await
+        .context("osm_low_memory panicked")?;
+    }
+
     // Step 1: extract ─────────────────────────────────────────────────────────
     let osm_data = {
         let _s = info_span!("osm_extract").entered();

@@ -20,7 +20,7 @@ pub struct TileKey {
 }
 
 /// Web Mercator (lon, lat) → (x, y) slippy tile at zoom z.
-fn lon_lat_to_tile_xy(lon_deg: f64, lat_deg: f64, z: u8) -> (u32, u32) {
+pub(crate) fn lon_lat_to_tile_xy(lon_deg: f64, lat_deg: f64, z: u8) -> (u32, u32) {
     let n = (1u64 << z) as f64;
     let x = ((lon_deg + 180.0) / 360.0 * n).floor() as i64;
     let lat_rad = lat_deg.to_radians();

@@ -8,6 +8,7 @@ mod http;
 mod merge;
 mod osm_adapt;
 mod osm_extract;
+mod osm_low_memory;
 mod osm_schema;
 mod parquet_meta;
 mod partition;
