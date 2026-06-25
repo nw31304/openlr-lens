@@ -2,7 +2,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Reverse;
 
 use openlr_codec::interval::LinearInterval;
-use openlr_graph::{EdgeSkipReason, Graph, NodeId, SegmentId};
+use openlr_graph::{EdgeSkipReason, Graph, NodeId, SegmentId, TileKey};
 use crate::trace::TraceLevel;
 
 use crate::trace::{AStarTerminationReason, DecodeEvent, RoutingFailure, SkipReason, ScoredCandidate, DecodeTrace};
@@ -64,6 +64,7 @@ pub fn find_route(
     max_path_search_factor: f64,
     max_astar_expansions: usize,
     trace: &mut DecodeTrace,
+    zoom: u8,
 ) -> Result<RouteResult, RoutingFailure> {
     let start_node = from.exit_node;
     // Route to the *entry* node of the to-candidate only.  The to-segment itself is
@@ -146,6 +147,20 @@ pub fn find_route(
         // Goal check: reached to.entry_node via a segment other than the start segment.
         if node == goal_node && via_seg != from.segment_id {
             return Ok(reconstruct(entry_idx, &closed_list, from.segment_id, to.segment_id));
+        }
+
+        // Boundary check: with endpoint-based tile assignment, a segment S (B→C) is stored
+        // in both tile_of(B) and tile_of(C). So outgoing[B] may contain S even when B's home
+        // tile is not loaded — it arrived via C's tile. That makes outgoing[B] an unknown
+        // subset of B's true successors (segment T (B→D) where D is in B's home tile would
+        // be invisible). We must load B's home tile before expanding to avoid missing T.
+        if let Some(n) = graph.nodes.get(&node) {
+            if n.is_boundary {
+                let tk = TileKey::from_lonlat(n.lon, n.lat, zoom);
+                if !graph.is_tile_loaded(tk) {
+                    return Err(RoutingFailure::NeedsTile { z: tk.z, x: tk.x, y: tk.y });
+                }
+            }
         }
 
         // Count (and at Full level: report) edges filtered out before A* sees them.
@@ -313,7 +328,7 @@ mod tests {
         let to   = cand(2, 1, 2);
         let dnp  = LinearInterval { lb: 80.0, ub: 120.0 };
         let mut trace = DecodeTrace::new(DecodeParams::default());
-        let result = find_route(0, &from, &to, &g, 7, dnp, 5.0, 0, &mut trace);
+        let result = find_route(0, &from, &to, &g, 7, dnp, 5.0, 0, &mut trace, 12);
         assert!(result.is_ok() || true, "path found or trivial");
     }
 
@@ -335,7 +350,7 @@ mod tests {
         let to   = cand(3, 2, 3);  // entry_node = 2, exit_node = 3 — not adjacent to from
         let dnp  = LinearInterval { lb: 50.0, ub: 100.0 };
         let mut trace = DecodeTrace::new(DecodeParams::default());
-        let result = find_route(0, &from, &to, &g, 7, dnp, 5.0, 0, &mut trace);
+        let result = find_route(0, &from, &to, &g, 7, dnp, 5.0, 0, &mut trace, 12);
         assert!(result.is_err(), "expected no path: only route is 11 km but max_dist is 500 m");
     }
 }

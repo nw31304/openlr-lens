@@ -333,7 +333,9 @@ mod integration {
         assert!(!result.path.is_empty());
 
         let wkt = path_to_wkt(
-            &result.path, result.pos_offset_m, result.neg_offset_m,
+            &result.path,
+            result.pos_offset.map_or(0.0, |i| i.lb),
+            result.neg_offset.map_or(0.0, |i| i.lb),
             result.first_lrp_arc_m, result.last_lrp_arc_m,
             result.first_seg_traversal, result.last_seg_traversal,
             provider.graph(),
@@ -521,7 +523,7 @@ mod integration {
         match result {
             Ok(decoded) => {
                 eprintln!("Leg-4 decode OK: {} segment(s)", decoded.path.len());
-                if let Some(wkt) = path_to_wkt(&decoded.path, decoded.pos_offset_m, decoded.neg_offset_m, decoded.first_lrp_arc_m, decoded.last_lrp_arc_m, decoded.first_seg_traversal, decoded.last_seg_traversal, provider.graph()) {
+                if let Some(wkt) = path_to_wkt(&decoded.path, decoded.pos_offset.map_or(0.0, |i| i.lb), decoded.neg_offset.map_or(0.0, |i| i.lb), decoded.first_lrp_arc_m, decoded.last_lrp_arc_m, decoded.first_seg_traversal, decoded.last_seg_traversal, provider.graph()) {
                     println!("{wkt}");
                 }
             }
@@ -571,15 +573,19 @@ mod integration {
         let result = decode(&loc_ref, provider.graph(), &params).expect("decode failed");
         assert!(!result.path.is_empty(), "path must be non-empty");
 
+        let pos_lb = result.pos_offset.map_or(0.0, |i| i.lb);
+        let neg_lb = result.neg_offset.map_or(0.0, |i| i.lb);
         eprintln!(
             "Decoded {} segment(s), pos_offset={:.1}m, neg_offset={:.1}m, last_lrp_arc={:.1}m",
-            result.path.len(), result.pos_offset_m, result.neg_offset_m, result.last_lrp_arc_m,
+            result.path.len(), pos_lb, neg_lb, result.last_lrp_arc_m,
         );
-        assert!(result.neg_offset_m > 0.0, "expected a positive neg_offset_m (the encoded negative offset)");
+        assert!(result.neg_offset.is_some(), "expected a negative offset to be encoded");
 
         let wkt = path_to_wkt(
-            &result.path, result.pos_offset_m, result.neg_offset_m,
-            result.first_lrp_arc_m, result.last_lrp_arc_m, provider.graph(),
+            &result.path, pos_lb, neg_lb,
+            result.first_lrp_arc_m, result.last_lrp_arc_m,
+            result.first_seg_traversal, result.last_seg_traversal,
+            provider.graph(),
         ).expect("WKT generation failed");
 
         eprintln!("WKT point count: {}", wkt.split(',').count());
@@ -632,10 +638,10 @@ mod integration {
         // Dump candidates from trace.
         if let Some(trace) = &result.trace {
             for event in &trace.events {
-                if let DecodeEvent::CandidatesRanked { lrp_idx, accepted, rejected_count } = event {
+                if let DecodeEvent::CandidatesRanked { lrp_idx, accepted, .. } = event {
                     let lrp = &loc_ref.lrps[*lrp_idx];
                     eprintln!(
-                        "\n--- LRP[{lrp_idx}] candidates: {} accepted, {rejected_count} rejected ---",
+                        "\n--- LRP[{lrp_idx}] candidates: {} accepted ---",
                         accepted.len(),
                     );
                     eprintln!(
@@ -661,7 +667,7 @@ mod integration {
         }
 
         eprintln!("\nDecoded {} segs, pos_offset={:.1}m, first_lrp_arc={:.1}m",
-            result.path.len(), result.pos_offset_m, result.first_lrp_arc_m);
+            result.path.len(), result.pos_offset.map_or(0.0, |i| i.lb), result.first_lrp_arc_m);
 
         // Dump each decoded segment's geometry, start/end nodes, length, direction.
         let graph = provider.graph();
@@ -728,9 +734,9 @@ mod integration {
         let result2 = decode(&loc_ref, provider.graph(), &p2).expect("decode failed with 500m radius");
         if let Some(trace2) = &result2.trace {
             for event in &trace2.events {
-                if let DecodeEvent::CandidatesRanked { lrp_idx, accepted, rejected_count } = event {
+                if let DecodeEvent::CandidatesRanked { lrp_idx, accepted, .. } = event {
                     if *lrp_idx == 0 {
-                        eprintln!("LRP[0] with 500m radius: {} accepted, {rejected_count} rejected", accepted.len());
+                        eprintln!("LRP[0] with 500m radius: {} accepted", accepted.len());
                         for (rank, c) in accepted.iter().take(5).enumerate() {
                             eprintln!(
                                 "  #{rank}: seg={:?}  proj=({:.6},{:.6})  dist={:.1}m  bearing={:.1}°  score={:.1}",
@@ -747,7 +753,7 @@ mod integration {
             .map(|s| s.length_m)
             .sum();
         eprintln!("500m decode: {} segs, route length {:.1}m, pos_offset={:.1}m, first_lrp_arc={:.1}m",
-            result2.path.len(), total_len2, result2.pos_offset_m, result2.first_lrp_arc_m);
+            result2.path.len(), total_len2, result2.pos_offset.map_or(0.0, |i| i.lb), result2.first_lrp_arc_m);
     }
 
     /// Positive-offset trimming test.
@@ -786,15 +792,17 @@ mod integration {
         let result = decode(&loc_ref, provider.graph(), &params).expect("decode failed");
         assert!(!result.path.is_empty(), "path must be non-empty");
 
+        let pos_lb = result.pos_offset.map_or(0.0, |i| i.lb);
+        let neg_lb = result.neg_offset.map_or(0.0, |i| i.lb);
         eprintln!(
             "Decoded {} segment(s), pos_offset={:.1}m, neg_offset={:.1}m, first_lrp_arc={:.1}m, last_lrp_arc={:.1}m",
-            result.path.len(), result.pos_offset_m, result.neg_offset_m,
+            result.path.len(), pos_lb, neg_lb,
             result.first_lrp_arc_m, result.last_lrp_arc_m,
         );
-        assert!(result.pos_offset_m > 0.0, "expected a positive pos_offset_m");
+        assert!(result.pos_offset.is_some(), "expected a positive offset to be encoded");
 
         let wkt = path_to_wkt(
-            &result.path, result.pos_offset_m, result.neg_offset_m,
+            &result.path, pos_lb, neg_lb,
             result.first_lrp_arc_m, result.last_lrp_arc_m,
             result.first_seg_traversal, result.last_seg_traversal,
             provider.graph(),

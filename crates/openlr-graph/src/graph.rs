@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use crate::{NetworkNode, NetworkSegment, NodeId, SegmentId, TurnRestriction, Direction};
+use crate::{NetworkNode, NetworkSegment, NodeId, SegmentId, TurnRestriction, Direction, TileKey};
 use crate::geometry::{haversine_m, project_onto_polyline};
 
 // Grid cell size: 1/500 degree ≈ 222 m at equator.  Fine enough to cover the
@@ -39,6 +39,9 @@ pub struct Graph {
     /// Spatial grid: grid-cell key → segment IDs whose geometry bbox overlaps that cell.
     /// Cell size ≈ 222 m; turns `segments_near` from O(total) to O(local density).
     spatial_grid: HashMap<(i32, i32), Vec<SegmentId>>,
+    /// Tiles that have been injected into this graph (including empty tiles marked as
+    /// loaded so A* does not repeatedly request them).
+    loaded_tiles: HashSet<TileKey>,
 }
 
 impl Default for Graph {
@@ -53,7 +56,21 @@ impl Graph {
             outgoing: HashMap::new(),
             restrictions: Vec::new(),
             spatial_grid: HashMap::new(),
+            loaded_tiles: HashSet::new(),
         }
+    }
+
+    /// Record that tile `(z, x, y)` has been loaded into this graph.
+    /// Also called for tiles that are absent from the archive (empty) so that
+    /// A* does not keep requesting them — boundary nodes in those tiles are
+    /// treated as genuine dead ends.
+    pub fn mark_tile_loaded(&mut self, z: u8, x: u32, y: u32) {
+        self.loaded_tiles.insert(TileKey { z, x, y });
+    }
+
+    /// Return true if `tk` has been loaded (or marked as empty) into this graph.
+    pub fn is_tile_loaded(&self, tk: TileKey) -> bool {
+        self.loaded_tiles.contains(&tk)
     }
 
     pub fn add_segment(&mut self, seg: NetworkSegment) {
@@ -103,6 +120,10 @@ impl Graph {
 
     pub fn add_restriction(&mut self, r: TurnRestriction) {
         self.restrictions.push(r);
+    }
+
+    pub fn restrictions_count(&self) -> usize {
+        self.restrictions.len()
     }
 
     /// Segments within `radius_m` of `(lon, lat)`. Returns `(segment_id, distance_m)`.

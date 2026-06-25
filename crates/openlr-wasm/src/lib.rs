@@ -30,7 +30,7 @@ use wasm_bindgen::prelude::*;
 
 use openlr_codec::{decode_v3_base64, decode_tpeg_hex, decode_tpeg_base64};
 use openlr_codec::lrp::{LocationReference, LocationType, Orientation, SideOfRoad};
-use openlr_engine::{decode as engine_decode, DecodeParams, Preset, prefetch_tile_keys, path_to_wkt, path_band_wkt};
+use openlr_engine::{decode as engine_decode, DecodeError, DecodeParams, Preset, prefetch_tile_keys, path_to_wkt, path_band_wkt};
 use openlr_graph::polyline_length_m;
 use openlr_engine::trace::TraversalDir;
 use openlr_provider::TileLoader;
@@ -50,6 +50,13 @@ pub fn start() {
 struct StartResult {
     /// Tiles to fetch before calling `decode()`.  Each entry is `[z, x, y]`.
     tiles: Vec<[u32; 3]>,
+}
+
+/// Returned by `Decoder.decode()` when A* needs a tile that has not been loaded yet.
+/// JS must load the tile via `load_tile()` and call `decode()` again.
+#[derive(Serialize)]
+struct NeedsTileResult {
+    needs_tile: [u32; 3],
 }
 
 /// Per-segment metadata included in a successful `DecodeResult`.
@@ -134,14 +141,10 @@ struct DecodeResult {
     wkt: Option<String>,
     segments: Vec<SegmentInfo>,
     lrps: Vec<LrpInfo>,
-    /// Midpoint of the positive-offset interval (meters from first LRP forward).
-    pos_offset_m: f64,
-    /// Midpoint of the negative-offset interval (meters backward from last LRP).
-    neg_offset_m: f64,
-    /// Raw [LB, UB] of the positive offset interval. Both 0 when no pos offset.
+    /// [LB, UB] of the positive offset interval. Both 0 when no pos offset.
     pos_offset_lb: f64,
     pos_offset_ub: f64,
-    /// Raw [LB, UB] of the negative offset interval. Both 0 when no neg offset.
+    /// [LB, UB] of the negative offset interval. Both 0 when no neg offset.
     neg_offset_lb: f64,
     neg_offset_ub: f64,
     /// Conservative WKT trimmed at LB (maximal coverage). Used by the copy button.
@@ -182,8 +185,6 @@ impl DecodeResult {
             wkt: None,
             segments: vec![],
             lrps: vec![],
-            pos_offset_m: 0.0,
-            neg_offset_m: 0.0,
             pos_offset_lb: 0.0,
             pos_offset_ub: 0.0,
             neg_offset_lb: 0.0,
@@ -290,8 +291,15 @@ impl Decoder {
             None => return serde_json::to_string(&DecodeResult::err("call start() first")).unwrap(),
         };
 
-        let result = match engine_decode(loc_ref, &self.loader.graph, &self.params) {
+        let result = match engine_decode(loc_ref, &self.loader.graph, &self.params, self.zoom) {
             Err(failure) => {
+                // A* needs a tile that hasn't been loaded yet — not a permanent failure.
+                // Return a distinct signal so JS can load the tile and retry decode().
+                if let DecodeError::NeedsTile(tk) = failure.error {
+                    return serde_json::to_string(&NeedsTileResult {
+                        needs_tile: [tk.z as u32, tk.x, tk.y],
+                    }).unwrap();
+                }
                 let trace_value = failure.trace.and_then(|t| serde_json::to_value(t).ok());
                 return serde_json::to_string(&DecodeResult {
                     lrps: lrp_info_vec(&loc_ref.lrps, &[], &[], &[]),
@@ -443,8 +451,6 @@ impl Decoder {
             wkt,
             segments,
             lrps,
-            pos_offset_m: result.pos_offset_m,
-            neg_offset_m: result.neg_offset_m,
             pos_offset_lb,
             pos_offset_ub,
             neg_offset_lb,

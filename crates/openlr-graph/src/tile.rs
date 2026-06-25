@@ -50,7 +50,7 @@ impl TileKey {
 
 /// Magic bytes for the tile payload header.
 pub const TILE_MAGIC: [u8; 4] = *b"OLRL";
-pub const TILE_VERSION: u8 = 1;
+pub const TILE_VERSION: u8 = 2;
 
 /// Tile header — all integers little-endian.
 #[repr(C)]

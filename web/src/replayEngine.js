@@ -148,7 +148,7 @@ export function buildReplaySteps(events) {
         break;
 
       case 'OffsetApplied':
-        steps.push({ type: 'offset_applied', is_positive: d.is_positive, trim_m: d.trim_m, interval: d.interval });
+        steps.push({ type: 'offset_applied', is_positive: d.is_positive, interval: d.interval });
         i++;
         break;
 
@@ -304,10 +304,16 @@ function applyStep(s, step, maxGTotal) {
       break;
     }
 
-    case 'offset_applied':
-      s.phase      = 'trimming';
-      s.statusText = `${step.is_positive ? 'Positive' : 'Negative'} offset — trim ${step.trim_m.toFixed(0)} m`;
+    case 'offset_applied': {
+      s.phase = 'trimming';
+      const lb = step.interval?.lb ?? 0;
+      const ub = step.interval?.ub ?? 0;
+      const label = step.is_positive ? 'Positive' : 'Negative';
+      s.statusText = lb === ub
+        ? `${label} offset — ${lb.toFixed(0)} m`
+        : `${label} offset — [${lb.toFixed(0)}, ${ub.toFixed(0)}] m`;
       break;
+    }
 
     case 'decode_complete': {
       s.phase     = 'complete';

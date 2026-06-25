@@ -543,8 +543,9 @@ function OffsetsSection({ offsets }) {
       {offsets.map((o, i) => (
         <div key={i} className="tp-row">
           <span className="tp-dim">{o.is_positive ? 'Positive' : 'Negative'}</span>
-          {' '}{fmtM(o.trim_m)} trimmed
-          {o.interval && ` (interval [${o.interval.lb?.toFixed(1)}, ${o.interval.ub?.toFixed(1)}]m)`}
+          {o.interval && o.interval.lb === o.interval.ub
+            ? ` ${o.interval.lb?.toFixed(1)} m`
+            : o.interval && ` [${o.interval.lb?.toFixed(1)}, ${o.interval.ub?.toFixed(1)}] m`}
         </div>
       ))}
     </Section>
@@ -560,8 +561,8 @@ function ResultSection({ decodeResult }) {
       <div className={`tp-row ${decodeResult.ok ? 'tp-ok' : 'tp-err'}`}>
         {decodeResult.ok ? '✓ Decoded' : '✗ Failed'}
         {decodeResult.ok && ` · ${decodeResult.segments?.length ?? 0} segment${decodeResult.segments?.length !== 1 ? 's' : ''}`}
-        {decodeResult.ok && decodeResult.pos_offset_m > 0 && ` · +${decodeResult.pos_offset_m.toFixed(1)} m`}
-        {decodeResult.ok && decodeResult.neg_offset_m > 0 && ` · −${decodeResult.neg_offset_m.toFixed(1)} m`}
+        {decodeResult.ok && decodeResult.pos_offset_ub > 0 && ` · +[${decodeResult.pos_offset_lb?.toFixed(1)}, ${decodeResult.pos_offset_ub?.toFixed(1)}] m`}
+        {decodeResult.ok && decodeResult.neg_offset_ub > 0 && ` · −[${decodeResult.neg_offset_lb?.toFixed(1)}, ${decodeResult.neg_offset_ub?.toFixed(1)}] m`}
       </div>
       {!decodeResult.ok && decodeResult.error && (
         <div className="tp-err tp-row">{decodeResult.error}</div>

@@ -267,7 +267,50 @@ export const useStore = create(persist(
       const segs = _decoder.loaded_segment_count();
       console.log(`[decode] tiles requested=${startResult.tiles.length} loaded=${loadedTiles} segments=${segs}`);
 
+      // Run decode, loading any tiles A* discovers it needs along the way.
+      // Each call either returns a result (ok or error) or a { needs_tile: [z,x,y] }
+      // signal.  We cap retries to prevent runaway in degenerate cases.
+      const attemptedTiles = new Set(startResult.tiles.map(([z,x,y]) => `${z}/${x}/${y}`));
+      let result;
+      const MAX_DYNAMIC_LOADS = 20;
+      for (let attempt = 0; attempt <= MAX_DYNAMIC_LOADS; attempt++) {
+        const tDecode0 = performance.now();
+        result = JSON.parse(_decoder.decode());
+        console.log(`[timing] decode() attempt ${attempt}: ${(performance.now()-tDecode0).toFixed(1)} ms`);
+
+        if (!result.needs_tile) break;
+
+        const [z, x, y] = result.needs_tile;
+        const tileKey = `${z}/${x}/${y}`;
+
+        if (attemptedTiles.has(tileKey)) {
+          // Guard: same tile requested twice means the graph didn't register it as
+          // loaded (shouldn't happen, but prevents an infinite loop).
+          console.warn(`[tile] A* re-requested ${tileKey} — already attempted, stopping`);
+          break;
+        }
+        attemptedTiles.add(tileKey);
+        console.log(`[tile] A* needs ${tileKey} (dynamic load, attempt ${attempt + 1})`);
+
+        try {
+          const res = await _pmtiles.getZxy(z, x, y);
+          if (res?.data) {
+            _decoder.load_tile(z, x, y, new Uint8Array(res.data));
+            _tileGeomCache.set(tileKey, decodeTile(res.data, z, x, y).features);
+            console.log(`[tile] dynamic loaded ${tileKey} (${res.data.byteLength} bytes)`);
+          } else {
+            // Tile not in archive — mark as loaded (empty) so A* stops requesting it.
+            _decoder.load_tile(z, x, y, new Uint8Array(0));
+            console.warn(`[tile] dynamic ${tileKey}: not in archive, marked empty`);
+          }
+        } catch (e) {
+          console.warn(`[tile] dynamic ${tileKey} load failed:`, e?.message ?? e);
+          break;
+        }
+      }
+
       // Build segment_id → tile + segment_id → feature maps.
+      // Done after the dynamic-tile loop so all loaded tiles are included.
       // Pre-index each tile's features by local_index so the per-segment lookup is O(1)
       // rather than O(tile_size) — avoiding an O(N²) scan over 200k+ segments.
       const tIdx0 = performance.now();
@@ -293,10 +336,6 @@ export const useStore = create(persist(
       }
       console.log(`[timing] segGeomCache build (${rawMappings.length} segs): ${(performance.now()-tCache0).toFixed(1)} ms`);
       console.log(`[segGeomCache] ${_segGeomCache.size}/${rawMappings.length} segments have geometry`);
-
-      const tDecode0 = performance.now();
-      const result = JSON.parse(_decoder.decode());
-      console.log(`[timing] decode() WASM: ${(performance.now()-tDecode0).toFixed(1)} ms`);
       // Enrich decoded segments with source_id from the tile geometry cache.
       for (const seg of result.segments ?? []) {
         const feat = _segGeomCache.get(seg.segment_id);

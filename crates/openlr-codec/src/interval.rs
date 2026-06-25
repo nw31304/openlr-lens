@@ -18,20 +18,69 @@ impl CircularInterval {
 
     /// True if `deg` falls within this interval (mod 360, inclusive).
     pub fn contains(self, deg: f64) -> bool {
+        // A span of exactly 360° (or wider after widen()) is the full circle.
+        // rem_euclid(360) maps 360.0 → 0.0, so we must check before taking the remainder.
+        if self.ub_deg - self.lb_deg >= 360.0 {
+            return true;
+        }
         let span = (self.ub_deg - self.lb_deg).rem_euclid(360.0);
         let offset = (deg - self.lb_deg).rem_euclid(360.0);
         offset <= span
     }
 
-    /// Signed shortest angular distance from `deg` to the nearest bound.
+    /// Shortest angular distance from `deg` to the nearest bound.
     /// Returns 0.0 if `deg` is inside the interval.
     pub fn excess(self, deg: f64) -> f64 {
+        if self.ub_deg - self.lb_deg >= 360.0 {
+            return 0.0;
+        }
         if self.contains(deg) {
             return 0.0;
         }
         let to_lb = (self.lb_deg - deg).rem_euclid(360.0);
         let to_ub = (deg - self.ub_deg).rem_euclid(360.0);
         to_lb.min(to_ub)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_circle_contains_everything() {
+        let full = CircularInterval { lb_deg: 0.0, ub_deg: 360.0 };
+        for deg in [0.0, 90.0, 180.0, 270.0, 359.99] {
+            assert!(full.contains(deg), "{deg}° should be inside [0,360]");
+            assert_eq!(full.excess(deg), 0.0);
+        }
+    }
+
+    #[test]
+    fn over_360_after_widen_contains_everything() {
+        // A narrow bucket widened by a large tolerance exceeds 360° — must still be full circle.
+        let narrow = CircularInterval { lb_deg: 90.0, ub_deg: 101.25 };
+        let wide = narrow.widen(180.0); // span = 361.25°
+        assert!(wide.contains(0.0));
+        assert!(wide.contains(270.0));
+        assert_eq!(wide.excess(270.0), 0.0);
+    }
+
+    #[test]
+    fn exactly_360_not_zero() {
+        // The original bug: span = 360 → rem_euclid(360) = 0 → only lb_deg matched.
+        let full = CircularInterval { lb_deg: 45.0, ub_deg: 405.0 }; // 360° span, offset lb
+        assert!(full.contains(0.0), "0° should be inside a full-circle interval");
+        assert!(full.contains(200.0));
+    }
+
+    #[test]
+    fn wraparound_interval() {
+        let wrap = CircularInterval { lb_deg: 350.0, ub_deg: 10.0 };
+        assert!(wrap.contains(0.0));
+        assert!(wrap.contains(355.0));
+        assert!(!wrap.contains(180.0));
+        assert!(wrap.excess(180.0) > 0.0);
     }
 }
 

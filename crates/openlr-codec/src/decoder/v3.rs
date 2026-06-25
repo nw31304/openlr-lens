@@ -72,7 +72,7 @@ fn decode_line(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
     // ── Intermediate LRPs (relative coords) ─────────────────────────────────
     let mut pos = 10_usize;
     for _ in 0..n_lrps - 2 {
-        let (prev_lon, prev_lat) = lrps.last().map(|l| l.coord).unwrap();
+        let (prev_lon, prev_lat) = lrps.last().map(|l| l.coord).expect("lrps starts non-empty and only grows");
         let lon = decode_rel_coord(bytes[pos],     bytes[pos + 1], prev_lon);
         let lat = decode_rel_coord(bytes[pos + 2], bytes[pos + 3], prev_lat);
         let (frc, fow)       = decode_attr1(bytes[pos + 4]);
@@ -92,7 +92,7 @@ fn decode_line(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
     }
 
     // ── Last LRP ─────────────────────────────────────────────────────────────
-    let (prev_lon, prev_lat) = lrps.last().map(|l| l.coord).unwrap();
+    let (prev_lon, prev_lat) = lrps.last().map(|l| l.coord).expect("lrps is non-empty after first_lrp push");
     let lon_last = decode_rel_coord(bytes[pos],     bytes[pos + 1], prev_lon);
     let lat_last = decode_rel_coord(bytes[pos + 2], bytes[pos + 3], prev_lat);
     let (frc_last, fow_last)              = decode_attr1(bytes[pos + 4]);
@@ -114,8 +114,8 @@ fn decode_line(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
     // Positive offset is a fraction of the FIRST leg's DNP (LRP-0 → LRP-1).
     // Negative offset is a fraction of the LAST leg's DNP (LRP-(n-2) → LRP-(n-1)).
     // "LRP length" = DNP of the respective leg, not the total path length.
-    let first_dnp = lrps[0].dnp.unwrap();
-    let last_leg_dnp = lrps[lrps.len() - 2].dnp.unwrap(); // penultimate LRP's DNP
+    let first_dnp    = lrps[0].dnp.expect("first LRP always has a DNP in v3");
+    let last_leg_dnp = lrps[lrps.len() - 2].dnp.expect("penultimate LRP always has a DNP in v3");
 
     let offset_start = pos + 6;
     let mut off_idx = offset_start;

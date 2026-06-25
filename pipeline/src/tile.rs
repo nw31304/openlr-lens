@@ -362,7 +362,7 @@ fn build_directory(tile_entries: &[(u64, u64, u32)]) -> Result<DirectoryParts> {
 }
 
 
-fn write_pmtiles_file(tiles: &[(u64, Vec<u8>)], output_path: &Path, tile_zoom: u8) -> Result<()> {
+pub(crate) fn write_pmtiles_file(tiles: &[(u64, Vec<u8>)], output_path: &Path, tile_zoom: u8) -> Result<()> {
     // Build tile data section and tile entry list.
     let mut tile_data: Vec<u8> = Vec::new();
     let mut tile_entries: Vec<(u64, u64, u32)> = Vec::with_capacity(tiles.len());

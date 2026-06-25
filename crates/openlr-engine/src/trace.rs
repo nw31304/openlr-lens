@@ -133,6 +133,9 @@ pub enum SkipReason {
 pub enum RoutingFailure {
     NoPathFound,
     DnpOutOfRange { actual_m: f64, window: LinearInterval },
+    /// A* reached a boundary node whose home tile has not been loaded yet.
+    /// This is not a true routing failure — the caller must load the tile and retry.
+    NeedsTile { z: u8, x: u32, y: u32 },
 }
 
 // ── Event enum ────────────────────────────────────────────────────────────────
@@ -234,7 +237,6 @@ pub enum DecodeEvent {
     OffsetApplied {
         is_positive: bool,
         interval: LinearInterval,
-        trim_m: f64,
     },
 
     DecodeComplete(DecodeOutcome),
@@ -245,8 +247,8 @@ pub enum DecodeEvent {
 pub enum DecodeOutcome {
     Success {
         path: Vec<SegmentId>,
-        pos_offset_m: Option<f64>,
-        neg_offset_m: Option<f64>,
+        pos_offset: Option<LinearInterval>,
+        neg_offset: Option<LinearInterval>,
     },
     NoCandidates { lrp_idx: usize },
     NoRoute { leg: usize },

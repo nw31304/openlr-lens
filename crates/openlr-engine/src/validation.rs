@@ -36,31 +36,6 @@ pub fn validate_dnp(
     }
 }
 
-/// Apply a positive (head) or negative (tail) offset to the assembled path.
-///
-/// Returns the trimmed offset in meters (the point along the first/last segment
-/// where the decoded location begins/ends).
-///
-/// For a positive offset: the decoded location starts `trim_m` into the first segment.
-/// For a negative offset: the decoded location ends `trim_m` before the end of the last segment.
-pub fn apply_offset(
-    is_positive: bool,
-    offset_interval: LinearInterval,
-    _path: &[SegmentId],
-    _graph: &Graph,
-    trace: &mut DecodeTrace,
-) -> f64 {
-    // Use the midpoint of the offset interval as the trim point.
-    let trim_m = (offset_interval.lb + offset_interval.ub) / 2.0;
-
-    trace.push_summary(DecodeEvent::OffsetApplied {
-        is_positive,
-        interval: offset_interval,
-        trim_m,
-    });
-
-    trim_m
-}
 
 /// Compute the total length of a path (sum of segment lengths).
 pub fn path_length_m(segments: &[SegmentId], graph: &Graph) -> f64 {

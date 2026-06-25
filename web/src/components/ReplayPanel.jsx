@@ -202,8 +202,11 @@ function describeStep(step) {
       return `Leg ${step.leg} — DNP ${step.actual_m.toFixed(0)} m ∈ [${lb.toFixed(0)}, ${ub.toFixed(0)}] ${step.passed ? '✓' : '✗'}`;
     }
 
-    case 'offset_applied':
-      return `${step.is_positive ? 'Positive' : 'Negative'} offset · trim ${step.trim_m.toFixed(0)} m`;
+    case 'offset_applied': {
+      const lb = step.interval?.lb ?? 0, ub = step.interval?.ub ?? 0;
+      const range = lb === ub ? `${lb.toFixed(0)} m` : `[${lb.toFixed(0)}, ${ub.toFixed(0)}] m`;
+      return `${step.is_positive ? 'Positive' : 'Negative'} offset · ${range}`;
+    }
 
     case 'decode_complete': {
       const o = step.outcome;

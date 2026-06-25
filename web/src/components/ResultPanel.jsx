@@ -50,8 +50,8 @@ export default function ResultPanel() {
               {decodeResult.location_type === 'PointAlongLine'
                 ? 'PointAlongLine'
                 : `${decodeResult.segments.length} segment${decodeResult.segments.length !== 1 ? 's' : ''}`}
-              {decodeResult.pos_offset_m > 0 && ` · +${decodeResult.pos_offset_m.toFixed(1)} m`}
-              {decodeResult.neg_offset_m > 0 && ` · −${decodeResult.neg_offset_m.toFixed(1)} m`}
+              {decodeResult.pos_offset_ub > 0 && ` · +[${decodeResult.pos_offset_lb.toFixed(1)}, ${decodeResult.pos_offset_ub.toFixed(1)}] m`}
+              {decodeResult.neg_offset_ub > 0 && ` · −[${decodeResult.neg_offset_lb.toFixed(1)}, ${decodeResult.neg_offset_ub.toFixed(1)}] m`}
               {decodeResult.trace && !showTrace && (
                 <button className="result-trace-link" onClick={toggleTrace} title="Open decode trace panel">
                   ⚡ Trace

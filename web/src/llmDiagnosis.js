@@ -61,8 +61,14 @@ export function buildDiagnosticPrompt(decodeResult, params) {
   if (decodeResult.ok) {
     const segs = decodeResult.segments ?? [];
     lines.push(`Result: SUCCESS — ${segs.length} segment${segs.length !== 1 ? 's' : ''}`);
-    if (decodeResult.pos_offset_m > 0) lines.push(`  positive offset: ${decodeResult.pos_offset_m.toFixed(1)} m`);
-    if (decodeResult.neg_offset_m > 0) lines.push(`  negative offset: ${decodeResult.neg_offset_m.toFixed(1)} m`);
+    if (decodeResult.pos_offset_ub > 0) {
+      const lb = decodeResult.pos_offset_lb, ub = decodeResult.pos_offset_ub;
+      lines.push(`  positive offset: ${lb === ub ? `${lb.toFixed(1)} m` : `[${lb.toFixed(1)}, ${ub.toFixed(1)}] m`}`);
+    }
+    if (decodeResult.neg_offset_ub > 0) {
+      const lb = decodeResult.neg_offset_lb, ub = decodeResult.neg_offset_ub;
+      lines.push(`  negative offset: ${lb === ub ? `${lb.toFixed(1)} m` : `[${lb.toFixed(1)}, ${ub.toFixed(1)}] m`}`);
+    }
     if (segs.length > 0) {
       lines.push('Decoded path (ordered segments):');
       for (const s of segs) {

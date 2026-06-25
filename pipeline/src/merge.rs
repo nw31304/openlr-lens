@@ -390,18 +390,18 @@ mod tests {
     #[test]
     fn merge_two_archives_roundtrip() {
         // Build two small PMTiles archives and merge them; verify tile count.
-        use crate::tile::write_pmtiles_file_pub;
+        use crate::tile::write_pmtiles_file;
 
         let tmp1 = tempfile::NamedTempFile::new().unwrap();
         let tmp2 = tempfile::NamedTempFile::new().unwrap();
         let out  = tempfile::NamedTempFile::new().unwrap();
 
         // Archive 1: tiles 0 and 2
-        write_pmtiles_file_pub(&[(0, vec![0xAAu8; 10]), (2, vec![0xBBu8; 20])], tmp1.path(), 12).unwrap();
+        write_pmtiles_file(&[(0, vec![0xAAu8; 10]), (2, vec![0xBBu8; 20])], tmp1.path(), 12).unwrap();
         // Archive 2: tiles 1 and 3
-        write_pmtiles_file_pub(&[(1, vec![0xCCu8; 15]), (3, vec![0xDDu8; 25])], tmp2.path(), 12).unwrap();
+        write_pmtiles_file(&[(1, vec![0xCCu8; 15]), (3, vec![0xDDu8; 25])], tmp2.path(), 12).unwrap();
 
-        merge_pmtiles(&[tmp1.path().to_owned(), tmp2.path().to_owned()], out.path()).unwrap();
+        merge_pmtiles(&[tmp1.path().to_owned(), tmp2.path().to_owned()], out.path(), 12).unwrap();
 
         // Verify output has 4 tiles in order.
         let mut reader = PmtilesReader::open(out.path()).unwrap();
