@@ -63,8 +63,8 @@ fn decode_line(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
         fow:        fow0,
         lfrcnp:     Some(lfrcnp0),
         dnp:        Some(dnp0),
-        pos_offset: None,
-        neg_offset: None,
+        pos_offset: None, neg_offset: None,
+        pos_offset_raw: None, neg_offset_raw: None,
     };
 
     let mut lrps: Vec<Lrp> = vec![first_lrp];
@@ -85,8 +85,8 @@ fn decode_line(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
             fow,
             lfrcnp:     Some(lfrcnp),
             dnp:        Some(dnp),
-            pos_offset: None,
-            neg_offset: None,
+            pos_offset: None, neg_offset: None,
+            pos_offset_raw: None, neg_offset_raw: None,
         });
         pos += 7;
     }
@@ -106,35 +106,25 @@ fn decode_line(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
         fow:        fow_last,
         lfrcnp:     None,
         dnp:        None,
-        pos_offset: None,
-        neg_offset: None,
+        pos_offset: None, neg_offset: None,
+        pos_offset_raw: None, neg_offset_raw: None,
     });
 
-    // ── Offsets (spec §7.5.2, Equation 8) ────────────────────────────────────
-    // Positive offset is a fraction of the FIRST leg's DNP (LRP-0 → LRP-1).
-    // Negative offset is a fraction of the LAST leg's DNP (LRP-(n-2) → LRP-(n-1)).
-    // "LRP length" = DNP of the respective leg, not the total path length.
-    let first_dnp    = lrps[0].dnp.expect("first LRP always has a DNP in v3");
-    let last_leg_dnp = lrps[lrps.len() - 2].dnp.expect("penultimate LRP always has a DNP in v3");
-
+    // ── Offsets (spec §7.5.2) ─────────────────────────────────────────────────
+    // Raw offset bytes are stored here; the engine computes the metric interval
+    // [N/256 × L, (N+1)/256 × L] once the total A*-found path length L is known.
+    // Computing it here against the DNP interval would give a wrong (too-wide)
+    // result because LB and UB would use different values of L.
     let offset_start = pos + 6;
     let mut off_idx = offset_start;
 
     if has_pos_off {
-        let raw = bytes[off_idx] as f64;
-        lrps[0].pos_offset = Some(LinearInterval {
-            lb: raw / 256.0 * first_dnp.lb,
-            ub: (raw + 1.0) / 256.0 * first_dnp.ub,
-        });
+        lrps[0].pos_offset_raw = Some(bytes[off_idx]);
         off_idx += 1;
     }
     if has_neg_off {
-        let raw = bytes[off_idx] as f64;
         let last = lrps.len() - 1;
-        lrps[last].neg_offset = Some(LinearInterval {
-            lb: raw / 256.0 * last_leg_dnp.lb,
-            ub: (raw + 1.0) / 256.0 * last_leg_dnp.ub,
-        });
+        lrps[last].neg_offset_raw = Some(bytes[off_idx]);
     }
 
     Ok(LocationReference::line(lrps))
@@ -181,15 +171,8 @@ fn decode_pal(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
     let bearing1 = bearing_sector_to_interval(bytes[15] & 0x1F);
 
     // ── Optional positive offset (byte 16) ───────────────────────────────────
-    let pos_offset = if bytes.len() == 17 {
-        let raw = bytes[16] as f64;
-        Some(LinearInterval {
-            lb: raw / 256.0 * dnp0.lb,
-            ub: (raw + 1.0) / 256.0 * dnp0.ub,
-        })
-    } else {
-        None
-    };
+    // Store the raw byte; the engine computes the metric interval once path length is known.
+    let pos_offset_raw = if bytes.len() == 17 { Some(bytes[16]) } else { None };
 
     let lrp0 = Lrp {
         coord:      (lon0, lat0),
@@ -198,8 +181,10 @@ fn decode_pal(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
         fow:        fow0,
         lfrcnp:     Some(lfrcnp0),
         dnp:        Some(dnp0),
-        pos_offset,
+        pos_offset: None,
         neg_offset: None,
+        pos_offset_raw,
+        neg_offset_raw: None,
     };
     let lrp1 = Lrp {
         coord:      (lon1, lat1),
@@ -208,8 +193,8 @@ fn decode_pal(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
         fow:        fow1,
         lfrcnp:     None,
         dnp:        None,
-        pos_offset: None,
-        neg_offset: None,
+        pos_offset: None, neg_offset: None,
+        pos_offset_raw: None, neg_offset_raw: None,
     };
 
     Ok(LocationReference::point_along_line(vec![lrp0, lrp1], orientation, side_of_road))
@@ -303,8 +288,8 @@ mod tests {
     fn v3_two_lrp_both_offsets() {
         let loc = decode_v3_base64("C/7VOCaEbSu/BP+5AMUrbJEQ").unwrap();
         assert_eq!(loc.lrps.len(), 2);
-        assert!(loc.lrps[0].pos_offset.is_some());
-        assert!(loc.lrps[1].neg_offset.is_some());
+        assert!(loc.lrps[0].pos_offset_raw.is_some());
+        assert!(loc.lrps[1].neg_offset_raw.is_some());
     }
 
     // "C/4bnSaa4yu5Af91ACAruQT+r/+9Kwc=" — 3 LRPs, no offsets; 23 bytes.
@@ -435,9 +420,8 @@ mod tests {
         assert_eq!(loc.side_of_road, Some(crate::lrp::SideOfRoad::Right));
         assert_eq!(loc.lrps[0].frc, 2);
         assert_eq!(loc.lrps[0].fow, 3);
-        assert!(loc.lrps[0].pos_offset.is_some());
-        let off = loc.lrps[0].pos_offset.unwrap();
-        // lb = 128/256 * dnp.lb = 0.5 * (4 * 58.59375) ≈ 117.1875
-        assert!((off.lb - 128.0 / 256.0 * 4.0 * 15_000.0 / 256.0).abs() < 1e-6);
+        // Raw byte stored in codec; metric interval computed in engine once path length is known.
+        assert_eq!(loc.lrps[0].pos_offset_raw, Some(128));
+        assert!(loc.lrps[0].pos_offset.is_none());
     }
 }

@@ -237,14 +237,19 @@ fn evaluate_candidate(
         params.interior_weight
     };
 
-    // Wrong-endpoint penalty: continuous 0→1 based on position along the segment.
-    // For non-last LRPs the path enters this segment, so the correct end is entry
-    //   (arc=0); being near the exit means the path must traverse the whole segment
-    //   backward, which is penalized.
-    // For the last LRP the path exits this segment, so the correct end is exit
-    //   (arc=seg_length); being near the entry is penalized.
-    let t = (arc_offset_m / seg_length).clamp(0.0, 1.0);
-    let wrong_raw = if is_last_lrp { 1.0 - t } else { t };
+    // Wrong-endpoint penalty: fires only for actual endpoint snaps at the wrong end.
+    // Non-last LRP: travel enters this segment, so the correct end is entry; snapping
+    //   to the exit endpoint is wrong.
+    // Last LRP: travel exits this segment, so the correct end is exit; snapping to
+    //   the entry endpoint is wrong.
+    // Interior snaps pay interior_score (above) and never WEP — the two are mutually
+    //   exclusive by construction (is_at_entry/is_at_exit require the snap to be within
+    //   snap_to_endpoint_threshold_m of an endpoint).
+    let wrong_raw = match (is_last_lrp, is_at_entry, is_at_exit) {
+        (false, false, true) => 1.0,  // non-last: snapped to exit = wrong end
+        (true,  true, false) => 1.0,  // last: snapped to entry = wrong end
+        _                    => 0.0,
+    };
     let wrong_endpoint_score = params.wrong_endpoint_weight * wrong_raw;
 
     let total = distance_score + bearing_score + frc_score + fow_score
@@ -323,8 +328,8 @@ mod tests {
             fow: 3,
             lfrcnp: Some(5),
             dnp: Some(LinearInterval { lb: 58.0, ub: 117.0 }),
-            pos_offset: None,
-            neg_offset: None,
+            pos_offset: None, neg_offset: None,
+            pos_offset_raw: None, neg_offset_raw: None,
         }
     }
 

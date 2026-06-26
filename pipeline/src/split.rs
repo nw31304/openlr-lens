@@ -22,6 +22,10 @@ pub struct SplitEdge {
     pub direction: Direction,
     /// The parent Overture segment GERS id, used for turn-restriction cross-references.
     pub parent_gers_id: [u8; 16],
+    /// Zero-based index of this sub-edge among all sub-edges of the same parent segment.
+    /// Encoded into the segment stable-id table alongside the parent GERS id so each
+    /// sub-edge has a unique display key (e.g. "434722393-2").
+    pub split_idx: u32,
 }
 
 /// One road node, de-duplicated by GERS id across all edges.
@@ -115,6 +119,7 @@ fn split_segment(seg: AdaptedSegment, vehicular_endpoints: &HashSet<String>) -> 
 
     let mut edges = Vec::new();
     let mut node_records: Vec<NodeRecord> = Vec::new();
+    let mut split_idx: u32 = 0;
 
     for pair in connectors.windows(2) {
         let c_start = &pair[0];
@@ -174,7 +179,9 @@ fn split_segment(seg: AdaptedSegment, vehicular_endpoints: &HashSet<String>) -> 
             fow:             seg.fow,
             direction:       seg.direction,
             parent_gers_id,
+            split_idx,
         });
+        split_idx += 1;
     }
 
     (edges, node_records)

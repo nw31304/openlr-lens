@@ -236,7 +236,7 @@ function ReferenceSummarySection({ openlrString, lrps, decodeResult, setTraceLrp
                 title="Click to pan to this LRP"
                 onClick={() => setTraceLrpFocus({ ...l, index: i })}
               >
-                <td className="tp-dim">LRP{i}</td>
+                <td className="tp-dim">LRP{i + 1}</td>
                 <td>{l.lon.toFixed(5)}</td>
                 <td>{l.lat.toFixed(5)}</td>
                 <td>{l.frc}</td>
@@ -334,8 +334,8 @@ function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight, setCandi
 
   const lrp = lrpInfo?.[lrpIdx];
   const subtitle = lrp
-    ? `LRP ${lrpIdx} · ${lrp.lon.toFixed(4)},${lrp.lat.toFixed(4)}`
-    : `LRP ${lrpIdx}`;
+    ? `LRP ${lrpIdx + 1} · ${lrp.lon.toFixed(4)},${lrp.lat.toFixed(4)}`
+    : `LRP ${lrpIdx + 1}`;
   const accepted = ranked.accepted ?? [];
   const rejected = ranked.rejected ?? [];
 
@@ -570,7 +570,7 @@ function ResultSection({ decodeResult }) {
       {decodeResult.ok && decodeResult.wkt && (
         <div className="tp-wkt-row">
           <div className="tp-wkt tp-monospace tp-dim">{decodeResult.wkt.slice(0, 140)}{decodeResult.wkt.length > 140 ? '…' : ''}</div>
-          <button className="tp-copy-btn" title="Copy WKT (conservative — trimmed at LB)" onClick={() => navigator.clipboard.writeText(decodeResult.conservative_wkt ?? decodeResult.wkt)}>⎘</button>
+          <button className="tp-copy-btn" title="Copy WKT (trimmed at LB — maximum extent)" onClick={() => navigator.clipboard.writeText(decodeResult.wkt)}>⎘</button>
         </div>
       )}
     </Section>

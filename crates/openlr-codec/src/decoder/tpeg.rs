@@ -98,8 +98,8 @@ pub fn decode_tpeg(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
                 fow,
                 lfrcnp:     Some(lfrcnp),
                 dnp:        Some(dnp),
-                pos_offset: None,
-                neg_offset: None,
+                pos_offset: None, neg_offset: None,
+                pos_offset_raw: None, neg_offset_raw: None,
             });
             prev_lon = lon;
             prev_lat = lat;
@@ -133,8 +133,9 @@ pub fn decode_tpeg(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
         fow:        fow0,
         lfrcnp:     Some(lfrcnp0),
         dnp:        Some(dnp0),
-        pos_offset,
+        pos_offset,         // TPEG: exact meters, lb == ub
         neg_offset: None,
+        pos_offset_raw: None, neg_offset_raw: None,
     });
     lrps.extend(intermediates);
     lrps.push(Lrp {
@@ -145,7 +146,8 @@ pub fn decode_tpeg(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
         lfrcnp:     None,
         dnp:        None,
         pos_offset: None,
-        neg_offset,
+        neg_offset,         // TPEG: exact meters, lb == ub
+        pos_offset_raw: None, neg_offset_raw: None,
     });
 
     Ok(LocationReference::line(lrps))

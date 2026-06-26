@@ -97,8 +97,8 @@ mod tests {
             fow: 3,
             lfrcnp: Some(5),
             dnp: Some(LinearInterval { lb: 500.0, ub: 558.6 }),
-            pos_offset: None,
-            neg_offset: None,
+            pos_offset: None, neg_offset: None,
+            pos_offset_raw: None, neg_offset_raw: None,
         }
     }
 

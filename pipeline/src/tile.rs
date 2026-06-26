@@ -109,6 +109,17 @@ fn compute_tile_node_order(
     (node_order, node_index)
 }
 
+/// Construct the 16-byte segment stable-id stored in the tile.
+/// Layout: bytes 0–7 = parent GERS bytes 0–7 (source integer), bytes 8–11 = split_idx
+/// (u32 LE), bytes 12–15 = 0.  The JS tile decoder reads this format to produce display
+/// keys such as "434722393-2".
+pub fn seg_stable_id(parent_gers: &[u8; 16], split_idx: u32) -> [u8; 16] {
+    let mut id = [0u8; 16];
+    id[0..8].copy_from_slice(&parent_gers[0..8]);
+    id[8..12].copy_from_slice(&split_idx.to_le_bytes());
+    id
+}
+
 fn pack_attrs(frc: u8, fow: u8, direction: Direction) -> u8 {
     let dir: u8 = match direction {
         Direction::Both     => 0,
@@ -134,7 +145,8 @@ fn build_tile_payload(
     let xrestriction_count = cross.len() as u32;
 
     // Build geometry pool, segment records, and stable-id table (local index → source ID).
-    // For OSM tiles the 16-byte id is the encoded OSM way ID (i64 LE in bytes 0-7, zeros 8-15).
+    // Each 16-byte entry: bytes 0–7 = parent source integer (i64 LE), bytes 8–11 = split_idx
+    // (u32 LE), bytes 12–15 = 0.  JS decoder reads this as "sourceInt-splitIdx" (e.g. "434722393-2").
     let mut geom_pool: Vec<(i32, i32)> = Vec::new();
     let mut seg_records: Vec<[u8; 32]> = Vec::with_capacity(tile_edge_indices.len());
     let mut seg_gers_ids: Vec<[u8; 16]> = Vec::with_capacity(tile_edge_indices.len());
@@ -159,7 +171,7 @@ fn build_tile_payload(
         r[19] = 0; // flags reserved
         // r[20..32] = 0 (reserved)
         seg_records.push(r);
-        seg_gers_ids.push(e.parent_gers_id);
+        seg_gers_ids.push(seg_stable_id(&e.parent_gers_id, e.split_idx));
     }
 
     let geom_vertex_count = geom_pool.len() as u32;
@@ -606,10 +618,14 @@ pub fn write_tiles(
                 flags:    r.flags,
             });
         } else {
+            // Use the split-indexed stable_id so stitch_cross_tile can match against
+            // NetworkSegment.stable_id (which also carries the split index).
+            let from_stable = seg_stable_id(&edges[from_global].parent_gers_id, edges[from_global].split_idx);
+            let to_stable   = seg_stable_id(&edges[to_global].parent_gers_id,   edges[to_global].split_idx);
             tile_cross.entry(via_tile).or_default().push(CrossTileRestriction {
-                from_gers:      r.from_segment_gers,
+                from_gers:      from_stable,
                 via_node_local,
-                to_gers:        r.to_segment_gers,
+                to_gers:        to_stable,
                 flags:          r.flags,
             });
         }
@@ -821,6 +837,7 @@ mod tests {
                 fow: 3,
                 direction: Direction::Both,
                 parent_gers_id: [0u8; 16],
+                split_idx: 0,
             },
         ];
         let node_lookup: HashMap<[u8; 16], (i32, i32)> = HashMap::from([
@@ -859,6 +876,7 @@ mod tests {
             frc: 2, fow: 3,
             direction: Direction::Both,
             parent_gers_id: [0u8; 16],
+            split_idx: 0,
         }];
         let node_lookup = HashMap::from([
             ([1u8; 16], (0i32, 0i32)),

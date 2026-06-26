@@ -20,6 +20,9 @@ pub struct QuantizedEdge {
     pub fow: u8,
     pub direction: Direction,
     pub parent_gers_id: [u8; 16],
+    /// Passed through from [`SplitEdge`]; used by the tile builder to construct the
+    /// per-segment stable-id (bytes 8–11 of the 16-byte entry).
+    pub split_idx: u32,
 }
 
 /// A node with quantized coordinates.
@@ -72,6 +75,7 @@ fn quantize_edge(edge: SplitEdge) -> QuantizedEdge {
         fow:             edge.fow,
         direction:       edge.direction,
         parent_gers_id:  edge.parent_gers_id,
+        split_idx:       edge.split_idx,
     }
 }
 
@@ -175,6 +179,7 @@ mod tests {
             frc: 3, fow: 3,
             direction: Direction::Both,
             parent_gers_id: [0u8; 16],
+            split_idx: 0,
         };
         let qe = quantize_edge(edge);
         assert_eq!(qe.length_cm, 11132); // 111.319 m * 100 = 11131.9 → 11132

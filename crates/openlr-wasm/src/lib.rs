@@ -318,20 +318,21 @@ impl Decoder {
             &result.lrp_snap_distances_m,
         );
 
-        // Resolve offset intervals up front.
-        let pos_int = loc_ref.lrps.first().and_then(|l| l.pos_offset);
-        let neg_int = loc_ref.lrps.last() .and_then(|l| l.neg_offset);
+        // Resolve offset intervals from the engine result (not from loc_ref.lrps, which
+        // only carries raw bytes for v3 — the engine computes the true [LB,UB] intervals
+        // once total path length is known).
+        let pos_int = result.pos_offset;
+        let neg_int = result.neg_offset;
         let (pos_offset_lb, pos_offset_ub) = pos_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
         let (neg_offset_lb, neg_offset_ub) = neg_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
 
-        // Display WKT: trimmed at UB — only the *certain* portion.
-        // The [LB, UB] uncertainty caps are drawn separately as dashed overlays;
-        // trimming the solid line at UB means the caps are geometrically adjacent
-        // (cap ends at UB = solid starts at UB) with zero overlap.
+        // Display WKT: trimmed at LB — the maximal / most conservative extent.
+        // The [LB, UB] uncertainty caps are drawn as a distinct-colour overlay on top
+        // of this line; trimming at LB means the cap is wholly contained within it.
         let wkt = path_to_wkt(
             &result.path,
-            pos_offset_ub,
-            neg_offset_ub,
+            pos_offset_lb,
+            neg_offset_lb,
             result.first_lrp_arc_m,
             result.last_lrp_arc_m,
             result.first_seg_traversal,
@@ -339,21 +340,8 @@ impl Decoder {
             &self.loader.graph,
         );
 
-        // Conservative WKT: trimmed at LB — maximal coverage, what the copy button exports.
-        let conservative_wkt = if pos_offset_lb != pos_offset_ub || neg_offset_lb != neg_offset_ub {
-            path_to_wkt(
-                &result.path,
-                pos_offset_lb,
-                neg_offset_lb,
-                result.first_lrp_arc_m,
-                result.last_lrp_arc_m,
-                result.first_seg_traversal,
-                result.last_seg_traversal,
-                &self.loader.graph,
-            )
-        } else {
-            None // same as wkt when LB == UB (TPEG or no offset)
-        };
+        // No separate conservative_wkt needed — the main wkt is already LB-trimmed.
+        let conservative_wkt: Option<String> = None;
 
         let n_path = result.path.len();
         let segments: Vec<SegmentInfo> = result.path.iter().enumerate().filter_map(|(i, seg_id)| {

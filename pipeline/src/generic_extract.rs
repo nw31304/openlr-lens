@@ -124,6 +124,7 @@ fn parse_feature(
         fow,
         direction,
         parent_gers_id:  parent,
+        split_idx: 0,
     };
     let start_node = NodeRecord {
         gers_id: start_gers,

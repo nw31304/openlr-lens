@@ -60,7 +60,7 @@ const BASEMAPS = [
 
 // Custom sources/layers to preserve across basemap switches via transformStyle.
 const CUSTOM_SOURCES = new Set([
-  'olr-segments', 'decoded-path', 'lrp-markers',
+  'olr-segments', 'olr-nodes', 'decoded-path', 'lrp-markers',
   'lrp-snap', 'lrp-displacement',
   'offset-uncertainty', 'lrp-bearing', 'highlighted-segment', 'trace-segment',
   'replay-radius', 'replay-route', 'replay-candidates', 'replay-cloud', 'replay-frontier', 'replay-leg', 'replay-flash',
@@ -68,7 +68,7 @@ const CUSTOM_SOURCES = new Set([
 ]);
 const CUSTOM_LAYER_IDS = new Set([
   'olr-frc0','olr-frc1','olr-frc2','olr-frc3','olr-frc4','olr-frc5','olr-frc6','olr-frc7',
-  'olr-highlight', 'decoded-path-line', 'lrp-markers-circle',
+  'olr-highlight', 'olr-nodes-circle', 'decoded-path-line', 'lrp-markers-circle',
   'lrp-displacement-line', 'lrp-displacement-arrow',
   'offset-uncertainty-line',
   'lrp-bearing-fill', 'lrp-bearing-outline',
@@ -115,6 +115,50 @@ function tilesForBounds(bounds, z) {
 function formatBearing(lb, ub) {
   if (Math.abs(ub - lb) < 0.1) return `${lb.toFixed(1)}°`;
   return `${lb.toFixed(1)}° – ${ub.toFixed(1)}°`;
+}
+
+// 32-sector compass rose matching v3 bearing quantization (11.25° per sector).
+// Active sectors (those inside [lb, ub]) are highlighted in magenta.
+function BearingCompass({ lb, ub, size = 76 }) {
+  const N = 32;
+  const SECTOR = 360 / N;
+  const cx = size / 2, cy = size / 2;
+  const outerR = size / 2 - 4;
+  const innerR = outerR * 0.42;
+
+  function sectorActive(i) {
+    const mid = ((i + 0.5) * SECTOR + 360) % 360;
+    const lo = ((lb % 360) + 360) % 360;
+    const hi = ((ub % 360) + 360) % 360;
+    if (lo <= hi) return mid >= lo && mid <= hi;
+    return mid >= lo || mid <= hi; // wraparound, e.g. 350°–10°
+  }
+
+  function toXY(bearingDeg, r) {
+    const rad = ((bearingDeg - 90) * Math.PI) / 180;
+    return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
+  }
+
+  function sectorPath(i) {
+    const a0 = i * SECTOR, a1 = a0 + SECTOR;
+    const [ox0, oy0] = toXY(a0, outerR);
+    const [ox1, oy1] = toXY(a1, outerR);
+    const [ix0, iy0] = toXY(a0, innerR);
+    const [ix1, iy1] = toXY(a1, innerR);
+    return `M ${ox0} ${oy0} A ${outerR} ${outerR} 0 0 1 ${ox1} ${oy1} L ${ix1} ${iy1} A ${innerR} ${innerR} 0 0 0 ${ix0} ${iy0} Z`;
+  }
+
+  return (
+    <svg width={size} height={size} style={{ display: 'block', margin: '4px auto 0' }}>
+      {Array.from({ length: N }, (_, i) => (
+        <path key={i} d={sectorPath(i)}
+          fill={sectorActive(i) ? '#e040fb' : '#252535'}
+          stroke="#111" strokeWidth="0.8" />
+      ))}
+      <text x={cx} y={10} textAnchor="middle" fill="#888" fontSize="7" fontFamily="sans-serif" fontWeight="bold">N</text>
+      <circle cx={cx} cy={cy} r={2.5} fill="#555" />
+    </svg>
+  );
 }
 
 function parseWktLinestring(wkt) {
@@ -212,6 +256,27 @@ function addMapImages(map) {
   // Keep legacy name so any surviving refs still resolve
   map.addImage('candidate-chevron',  tc.getImageData(0, 0, tw, th), { sdf: true });
 
+  // Numbered LRP marker circles (1–20). Canvas-drawn so no glyph/font dependency.
+  const ms = 24;
+  for (let n = 1; n <= 20; n++) {
+    const mc = document.createElement('canvas');
+    mc.width = ms; mc.height = ms;
+    const mc2d = mc.getContext('2d');
+    mc2d.beginPath();
+    mc2d.arc(ms / 2, ms / 2, ms / 2 - 2, 0, 2 * Math.PI);
+    mc2d.fillStyle = '#e040fb';
+    mc2d.fill();
+    mc2d.strokeStyle = '#ffffff';
+    mc2d.lineWidth = 2;
+    mc2d.stroke();
+    mc2d.fillStyle = '#ffffff';
+    mc2d.font = `bold ${n > 9 ? 9 : 11}px Arial, sans-serif`;
+    mc2d.textAlign = 'center';
+    mc2d.textBaseline = 'middle';
+    mc2d.fillText(String(n), ms / 2, ms / 2 + 0.5);
+    map.addImage(`lrp-num-${n}`, mc2d.getImageData(0, 0, ms, ms));
+  }
+
 }
 
 // ── Map Component ──────────────────────────────────────────────────────────────
@@ -220,6 +285,7 @@ export default function MapView({ tilesBase, ready }) {
   const mapContainer    = useRef(null);
   const mapRef          = useRef(null);
   const tileCacheRef    = useRef(new Map());
+  const nodesCacheRef   = useRef(new Map());
   const pendingCountRef = useRef(0);
   const pmtilesRef      = useRef(null);
   const pulseRef        = useRef(null);
@@ -239,6 +305,8 @@ export default function MapView({ tilesBase, ready }) {
   const [infoProps, setInfoProps] = useState(null);
   const [infoAnchor, setInfoAnchor] = useState(null);
   const [lrpInfo, setLrpInfo] = useState(null);
+  const [nodeInfo, setNodeInfo] = useState(null);
+  const [nodeAnchor, setNodeAnchor] = useState(null);
   const [candAnchor, setCandAnchor] = useState(null);
   const [basemap, setBasemap] = useState('liberty');
   const [segDiagnosis, setSegDiagnosis] = useState(null);
@@ -415,6 +483,25 @@ export default function MapView({ tilesBase, ready }) {
         },
       });
 
+      // ── Node intersection markers ─────────────────────────────────────────
+      map.addSource('olr-nodes', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      map.addLayer({
+        id:     'olr-nodes-circle',
+        type:   'circle',
+        source: 'olr-nodes',
+        layout: { visibility: 'none' },
+        paint: {
+          'circle-radius':       5,
+          'circle-color':        '#ffffff',
+          'circle-stroke-width': 1.5,
+          'circle-stroke-color': '#444444',
+          'circle-opacity':      0.9,
+        },
+      });
+
       // ── Decoded path source + layer ───────────────────────────────────────
       map.addSource('decoded-path', {
         type: 'geojson',
@@ -431,27 +518,7 @@ export default function MapView({ tilesBase, ready }) {
           'line-opacity': 0.9,
         },
       });
-      // Direction triangles along the decoded path showing location traversal direction
-      map.addLayer({
-        id:     'decoded-path-arrow',
-        type:   'symbol',
-        source: 'decoded-path',
-        layout: {
-          'symbol-placement':    'line',
-          'symbol-spacing':      18,
-          'icon-image':          'direction-triangle',
-          'icon-size':           1.0,
-          'icon-allow-overlap':  true,
-          'icon-ignore-placement': true,
-        },
-        paint: {
-          'icon-color':        '#004466',
-          'icon-halo-color':   'white',
-          'icon-halo-width':   2,
-          'icon-halo-blur':    0,
-          'icon-opacity':      0.9,
-        },
-      });
+      // Direction on the decoded path is conveyed by the numbered LRP markers (1 → N).
 
       // ── Offset uncertainty caps (v3 [LB, UB] zone at path head/tail) ────
       // Path is now trimmed at LB, so these caps sit at the very START/END of
@@ -474,20 +541,16 @@ export default function MapView({ tilesBase, ready }) {
         data: { type: 'FeatureCollection', features: [] },
       });
 
+      // Single icon layer: canvas-generated numbered circles (no glyph/font dependency).
+      // ID kept as 'lrp-markers-circle' so existing beforeId refs in layers below still work.
       map.addLayer({
         id:     'lrp-markers-circle',
-        type:   'circle',
+        type:   'symbol',
         source: 'lrp-markers',
-        paint: {
-          'circle-radius':       7,
-          'circle-color': [
-            'case',
-            ['==', ['get', 'index'], 0],                              '#00bb44', // first  → green
-            ['==', ['get', 'index'], ['-', ['get', 'total'], 1]],     '#ee2222', // last   → red
-            '#0088ff',                                                            // middle → blue
-          ],
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff',
+        layout: {
+          'icon-image':             ['concat', 'lrp-num-', ['to-string', ['+', ['get', 'index'], 1]]],
+          'icon-allow-overlap':     true,
+          'icon-ignore-placement':  true,
         },
       });
 
@@ -778,6 +841,10 @@ export default function MapView({ tilesBase, ready }) {
         map.on('mouseleave', `olr-frc${frc}`, pointerOff);
       }
 
+      map.on('click',      'olr-nodes-circle', onNodeClick);
+      map.on('mouseenter', 'olr-nodes-circle', pointerOn);
+      map.on('mouseleave', 'olr-nodes-circle', pointerOff);
+
       map.on('click', 'lrp-markers-circle', onLrpClick);
       map.on('mouseenter', 'lrp-markers-circle', pointerOn);
       map.on('mouseleave', 'lrp-markers-circle', pointerOff);
@@ -870,8 +937,10 @@ export default function MapView({ tilesBase, ready }) {
         if (result?.data) {
           const fc = decodeTile(result.data, z, x, y);
           tileCache.set(key, fc.features);
+          nodesCacheRef.current.set(key, fc.nodeFeatures ?? []);
         } else {
           tileCache.set(key, []);
+          nodesCacheRef.current.set(key, []);
         }
       } catch (e) {
         console.error(`Tile ${key} failed:`, e);
@@ -893,9 +962,36 @@ export default function MapView({ tilesBase, ready }) {
       if (visibleKeys.has(key)) features.push(...feats);
     }
     map.getSource('olr-segments').setData({ type: 'FeatureCollection', features });
+
+    if (map.getSource('olr-nodes')) {
+      const nodeFeatures = [];
+      for (const [key, nFeats] of nodesCacheRef.current) {
+        if (visibleKeys.has(key)) nodeFeatures.push(...nFeats);
+      }
+      map.getSource('olr-nodes').setData({ type: 'FeatureCollection', features: nodeFeatures });
+    }
   }
 
   // ── Click interaction ────────────────────────────────────────────────────────
+
+  function onNodeClick(e) {
+    if (measuringRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = [...measurePtsRef.current, pt];
+      measurePtsRef.current = next;
+      setMeasurePts(next);
+      e.originalEvent.stopPropagation();
+      return;
+    }
+    if (!e.features?.length) return;
+    const props = e.features[0].properties;
+    setNodeInfo(props);
+    setNodeAnchor({ x: e.point.x, y: e.point.y });
+    setInfoProps(null);
+    setLrpInfo(null);
+    setSegDiagnosis(null);
+    e.originalEvent.stopPropagation();
+  }
 
   function onSegmentClick(e) {
     if (measuringRef.current) {
@@ -1400,7 +1496,8 @@ export default function MapView({ tilesBase, ready }) {
     for (let frc = 0; frc < 8; frc++) {
       if (map.getLayer(`olr-frc${frc}`)) map.setLayoutProperty(`olr-frc${frc}`, 'visibility', vis);
     }
-    if (map.getLayer('olr-highlight')) map.setLayoutProperty('olr-highlight', 'visibility', vis);
+    if (map.getLayer('olr-highlight'))     map.setLayoutProperty('olr-highlight',     'visibility', vis);
+    if (map.getLayer('olr-nodes-circle')) map.setLayoutProperty('olr-nodes-circle', 'visibility', vis);
   }, [showSegmentLayer]);
 
   // ── Decode result → map layers + camera ─────────────────────────────────────
@@ -1662,6 +1759,8 @@ export default function MapView({ tilesBase, ready }) {
                   ['Length',    `${infoProps.length_m} m`],
                   ['Tile',         infoProps.tile],
                   ['Tile Index',   infoProps.local_index],
+                  ['Start Node',   infoProps.start_node  ?? '—'],
+                  ['End Node',     infoProps.end_node    ?? '—'],
                   ['Segment Key',  infoProps.source_id   ?? '—'],
                   ['Internal ID',  infoProps.segment_id  != null ? infoProps.segment_id : '— (decode first)'],
                 ].map(([k, v]) => (
@@ -1715,7 +1814,7 @@ export default function MapView({ tilesBase, ready }) {
         <div ref={lrpPanelRef} className="seg-info-panel"
           style={lrpPos ? { position: 'absolute', left: lrpPos.left, top: lrpPos.top, right: 'auto', bottom: 'auto' } : popupStyle(infoAnchor)}>
           <header className="seg-info-header" onMouseDown={lrpMouseDown}>
-            <span>LRP {lrpInfo.index}</span>
+            <span>LRP {lrpInfo.index + 1}</span>
             <button className="seg-info-close" onClick={() => { setLrpInfo(null); setInfoAnchor(null); }}>✕</button>
           </header>
           <div className="seg-info-body">
@@ -1735,6 +1834,11 @@ export default function MapView({ tilesBase, ready }) {
                 ].map(([k, v]) => (
                   <tr key={k}><td className="seg-info-key">{k}</td><td><b>{v}</b></td></tr>
                 ))}
+                <tr>
+                  <td colSpan={2} style={{ paddingTop: '4px' }}>
+                    <BearingCompass lb={lrpInfo.bearing_lb} ub={lrpInfo.bearing_ub} />
+                  </td>
+                </tr>
                 {lrpInfo.snap_lon != null && <>
                   <tr><td className="seg-info-divider" colSpan={2} /></tr>
                   <tr>
@@ -1756,13 +1860,37 @@ export default function MapView({ tilesBase, ready }) {
         </div>
       )}
 
+      {/* Node intersection popup */}
+      {nodeInfo && (
+        <div className="seg-info-panel" style={popupStyle(nodeAnchor)}>
+          <header className="seg-info-header">
+            <span>Node {nodeInfo.local_index}</span>
+            <button className="seg-info-close" onClick={() => { setNodeInfo(null); setNodeAnchor(null); }}>✕</button>
+          </header>
+          <div className="seg-info-body">
+            <table>
+              <tbody>
+                {[
+                  ['Lat',      Number(nodeInfo.lat).toFixed(6)],
+                  ['Lon',      Number(nodeInfo.lon).toFixed(6)],
+                  ['Node ID',  nodeInfo.node_id],
+                  ['Tile',     nodeInfo.tile],
+                ].map(([k, v]) => (
+                  <tr key={k}><td className="seg-info-key">{k}</td><td><b>{v}</b></td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Candidate info popup */}
       {candidatePopup && (
         <div ref={candPanelRef} className="seg-info-panel cand-panel"
           style={candPos ? { position: 'absolute', left: candPos.left, top: candPos.top, right: 'auto', bottom: 'auto' } : popupStyle(candAnchor, 320, 320)}>
           <header className="seg-info-header" onMouseDown={candMouseDown}>
             <span>
-              LRP {candidatePopup.lrp_idx} candidate
+              LRP {candidatePopup.lrp_idx + 1} candidate
               {candidatePopup.winner && <span className="cand-winner-badge"> ★ chosen</span>}
             </span>
             <button className="seg-info-close" onClick={() => { clearCandidatePopup(); setCandAnchor(null); candResetPos(); }}>✕</button>
@@ -1908,6 +2036,8 @@ function CandidatePopupBody({ p }) {
           <tr><td className="seg-info-key">Arc offset</td><td><b>{fmt(p.arc_offset_m)} m</b></td></tr>}
         {p.bearing_deg != null &&
           <tr><td className="seg-info-key">Bearing</td><td><b>{fmt(p.bearing_deg, 1)}°</b></td></tr>}
+        {p.snap_lat != null &&
+          <tr><td className="seg-info-key">Snap point</td><td><b style={{fontSize:'11px'}}>{Number(p.snap_lat).toFixed(6)}, {Number(p.snap_lon).toFixed(6)}</b></td></tr>}
 
         {/* Score breakdown — accepted only */}
         {accepted && <>

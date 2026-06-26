@@ -52,6 +52,8 @@ export function decodeTile(buffer, z, x, y) {
   for (let i = 0; i < segmentCount; i++) {
     const base = offSegArray + i * 32;
 
+    const startNode  = view.getUint32(base + 0,  true); // local node index
+    const endNode    = view.getUint32(base + 4,  true); // local node index
     const geomOffset = view.getUint32(base + 8,  true); // vertex index
     const geomLen    = view.getUint16(base + 12, true); // vertex count
     const lengthCm   = view.getUint32(base + 14, true);
@@ -61,17 +63,21 @@ export function decodeTile(buffer, z, x, y) {
     const fow       = (packed >> 3) & 0x07;
     const dirIdx    = (packed >> 6) & 0x03;
 
-    // Source integer ID from stable-ID table (bytes 0-7 = source integer LE i64,
-    // bytes 8-15 = 0 for simple integer IDs; full GERS UUIDs have non-zero high bytes).
+    // Source display key from stable-ID table.
+    // Layout: bytes 0–7 = source integer (i64 LE), bytes 8–11 = split index (u32 LE),
+    // bytes 12–15 = 0.  Full GERS UUIDs have non-zero bytes 12–15 and are left as null.
     let source_id = null;
     const sidBase = offSegGers + i * 16;
     let isIntId = true;
-    for (let b = 8; b < 16; b++) {
+    for (let b = 12; b < 16; b++) {
       if (view.getUint8(sidBase + b) !== 0) { isIntId = false; break; }
     }
     if (isIntId) {
       const idBig = view.getBigInt64(sidBase, true);
-      if (idBig !== 0n) source_id = Number(idBig);
+      if (idBig !== 0n) {
+        const splitIdx = view.getUint32(sidBase + 8, true);
+        source_id = `${Number(idBig)}-${splitIdx}`;
+      }
     }
 
     // Read geometry
@@ -98,9 +104,44 @@ export function decodeTile(buffer, z, x, y) {
         tile:      tileKey,
         local_index: i,
         source_id,
+        start_node: startNode,
+        end_node:   endNode,
       },
     });
   }
 
-  return { type: 'FeatureCollection', features };
+  // Decode node table: 28 bytes/node — lon_e7 i32, lat_e7 i32, gers_id 16 bytes, flags u8, pad 3
+  const nodeFeatures = [];
+  for (let i = 0; i < nodeCount; i++) {
+    const base   = offNodes + i * 28;
+    const lonE7  = view.getInt32(base + 0, true);
+    const latE7  = view.getInt32(base + 4, true);
+
+    // Extract integer node id from the first 8 bytes of gers_id (bytes 8–15),
+    // treating it as a simple integer if the high 8 bytes (bytes 16–23) are zero.
+    let node_id = i; // fallback to local index
+    let isIntId = true;
+    for (let b = 16; b < 24; b++) {
+      if (view.getUint8(base + b) !== 0) { isIntId = false; break; }
+    }
+    if (isIntId) {
+      const idBig = view.getBigInt64(base + 8, true);
+      if (idBig !== 0n) node_id = Number(idBig);
+    }
+
+    nodeFeatures.push({
+      type: 'Feature',
+      id:   i,
+      geometry: { type: 'Point', coordinates: [lonE7 * 1e-7, latE7 * 1e-7] },
+      properties: {
+        node_id,
+        lat:         (latE7 * 1e-7).toFixed(7),
+        lon:         (lonE7 * 1e-7).toFixed(7),
+        local_index: i,
+        tile:        tileKey,
+      },
+    });
+  }
+
+  return { type: 'FeatureCollection', features, nodeFeatures };
 }

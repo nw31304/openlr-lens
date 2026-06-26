@@ -15,10 +15,19 @@ pub struct Lrp {
     pub lfrcnp: Option<u8>,
     /// Distance to next point in meters. None on the last LRP.
     pub dnp: Option<LinearInterval>,
-    /// Positive offset (meters from start of first edge). None if absent.
+    /// Positive offset interval (meters from start of first edge). None if absent.
+    /// For v3: computed in the engine once total path length is known (see pos_offset_raw).
+    /// For TPEG: set directly by the decoder (exact value, lb == ub).
     pub pos_offset: Option<LinearInterval>,
-    /// Negative offset (meters from end of last edge). None if absent.
+    /// Negative offset interval (meters from end of last edge). None if absent.
     pub neg_offset: Option<LinearInterval>,
+    /// Raw v3 positive offset byte (0–255). Present only for v3 line/PAL locations.
+    /// The engine derives pos_offset from this once total path length is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pos_offset_raw: Option<u8>,
+    /// Raw v3 negative offset byte (0–255). Present only for v3 line locations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub neg_offset_raw: Option<u8>,
 }
 
 /// Orientation attribute for PointAlongLine — direction of travel at the encoded point.

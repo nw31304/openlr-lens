@@ -150,7 +150,7 @@ pub fn decode(
     // `needs_tile` is set when A* encounters a boundary node whose home tile is
     // not loaded.  It lives outside the block so we can inspect it after `t` drops.
     let mut needs_tile: Option<TileKey> = None;
-    let route_result: Option<(Vec<SegmentId>, Vec<usize>)> = {
+    let route_result: Option<(Vec<SegmentId>, f64, Vec<usize>)> = {
         let t = trace.get_or_insert_with(|| Trace::new(params.clone()));
         let mut route_cache: RouteCache = HashMap::new();
 
@@ -175,7 +175,7 @@ pub fn decode(
         // Guard: both projections must be within 25 % of the search radius.  DNP
         // validation is the ultimate safety net for false positives.
         let nearby_threshold = params.candidate_search_radius_m * 0.25;
-        let precheck: Option<(Vec<SegmentId>, Vec<usize>)> = 'precheck: {
+        let precheck: Option<(Vec<SegmentId>, f64, Vec<usize>)> = 'precheck: {
             if lrps.len() == 2 {
                 for (i, from_cand) in all_candidates[0].iter().enumerate() {
                     for (j, to_cand) in all_candidates[1].iter().enumerate() {
@@ -193,11 +193,11 @@ pub fn decode(
 
                         if is_same_seg || is_adjacent {
                             let indices = vec![i, j];
-                            if let Some(p) = try_route_combination(
+                            if let Some((p, len)) = try_route_combination(
                                 &indices, &all_candidates, lrps, graph, params, t,
                                 &mut route_cache, &mut needs_tile, zoom,
                             ) {
-                                break 'precheck Some((p, indices));
+                                break 'precheck Some((p, len, indices));
                             }
                             if needs_tile.is_some() { break 'precheck None; }
                         }
@@ -214,11 +214,11 @@ pub fn decode(
         } else {
             let found = 'search: {
                 for indices in Gen::new(&all_candidates) {
-                    if let Some(p) = try_route_combination(
+                    if let Some((p, len)) = try_route_combination(
                         &indices, &all_candidates, lrps, graph, params, t,
                         &mut route_cache, &mut needs_tile, zoom,
                     ) {
-                        break 'search Some((p, indices));
+                        break 'search Some((p, len, indices));
                     }
                     if needs_tile.is_some() { break 'search None; }
                 }
@@ -237,7 +237,7 @@ pub fn decode(
         return Err(DecodeFailure { error: DecodeError::NeedsTile(tk), trace: None });
     }
 
-    let (path, winning_indices): (Vec<SegmentId>, Vec<usize>) = match route_result {
+    let (path, total_path_m, winning_indices): (Vec<SegmentId>, f64, Vec<usize>) = match route_result {
         Some(r) => r,
         None => return Err(DecodeFailure { error: DecodeError::AllCombinationsFailed(0), trace }),
     };
@@ -245,8 +245,22 @@ pub fn decode(
     // ── 3. Offsets ──────────────────────────────────────────────────────────
     let t = trace.get_or_insert_with(|| Trace::new(params.clone()));
 
-    let pos_offset: Option<LinearInterval> = lrps.first().and_then(|l| l.pos_offset);
-    let neg_offset: Option<LinearInterval> = lrps.last().and_then(|l| l.neg_offset);
+    // For v3: raw byte N → [N/256 × L, (N+1)/256 × L] using the actual total path
+    // length L.  Both bounds use the same L so the bucket width is exactly L/256.
+    // For TPEG: pos_offset/neg_offset are already exact LinearInterval::point values
+    // set by the decoder; raw bytes are None.
+    let pos_offset: Option<LinearInterval> = lrps.first().and_then(|l| {
+        l.pos_offset_raw.map(|n| LinearInterval {
+            lb: n as f64 / 256.0 * total_path_m,
+            ub: (n as f64 + 1.0) / 256.0 * total_path_m,
+        }).or(l.pos_offset)
+    });
+    let neg_offset: Option<LinearInterval> = lrps.last().and_then(|l| {
+        l.neg_offset_raw.map(|n| LinearInterval {
+            lb: n as f64 / 256.0 * total_path_m,
+            ub: (n as f64 + 1.0) / 256.0 * total_path_m,
+        }).or(l.neg_offset)
+    });
 
     // Emit trace events for the offset intervals (no midpoint computed).
     if let Some(interval) = pos_offset {
@@ -331,8 +345,9 @@ fn try_route_combination(
     cache: &mut RouteCache,
     needs_tile: &mut Option<TileKey>,
     zoom: u8,
-) -> Option<Vec<SegmentId>> {
+) -> Option<(Vec<SegmentId>, f64)> {
     let mut path: Vec<SegmentId> = Vec::new();
+    let mut total_path_m: f64 = 0.0;
 
     for leg in 0..lrps.len() - 1 {
         let from = &all_candidates[leg][indices[leg]];
@@ -361,6 +376,7 @@ fn try_route_combination(
                 path: vec![],
                 length_m: direct_m,
             });
+            total_path_m += direct_m;
             if path.is_empty() {
                 path.push(from.segment_id);
             }
@@ -433,6 +449,7 @@ fn try_route_combination(
             path: segments.clone(),
             length_m: full_length_m,
         });
+        total_path_m += full_length_m;
 
         if path.is_empty() {
             path.push(from.segment_id);
@@ -454,7 +471,7 @@ fn try_route_combination(
         return None;
     }
 
-    Some(path)
+    Some((path, total_path_m))
 }
 
 #[cfg(test)]
@@ -515,6 +532,7 @@ mod tests {
                     lfrcnp: Some(7),
                     dnp: Some(LinearInterval { lb: 0.0, ub: 1000.0 }),
                     pos_offset: None, neg_offset: None,
+                    pos_offset_raw: None, neg_offset_raw: None,
                 },
                 Lrp {
                     coord: (0.001, 0.0005),
@@ -523,6 +541,7 @@ mod tests {
                     lfrcnp: Some(7),
                     dnp: Some(LinearInterval { lb: 0.0, ub: 1000.0 }),
                     pos_offset: None, neg_offset: None,
+                    pos_offset_raw: None, neg_offset_raw: None,
                 },
                 Lrp {
                     coord: (0.0015, 0.001),
@@ -530,13 +549,14 @@ mod tests {
                     frc: 3, fow: 3,
                     lfrcnp: None, dnp: None,
                     pos_offset: None, neg_offset: None,
+                    pos_offset_raw: None, neg_offset_raw: None,
                 },
             ]);
 
         let mut params = DecodeParams::preset(Preset::Permissive);
         params.trace_level = TraceLevel::Off;
 
-        let result = decode(&loc_ref, &g, &params).expect("decode failed");
+        let result = decode(&loc_ref, &g, &params, 12).expect("decode failed");
         assert_eq!(
             result.path,
             vec![SegmentId(1), SegmentId(2), SegmentId(3)],

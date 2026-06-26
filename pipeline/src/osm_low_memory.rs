@@ -53,7 +53,7 @@ use crate::partition::available_ram_bytes;
 use crate::quantize::quantize_coord;
 use crate::restrictions::{encode_restriction_flags, HEADING_ANY};
 use crate::split::polyline_length_m;
-use crate::tile::{lon_lat_to_tile_xy, xyz_to_tile_id};
+use crate::tile::{lon_lat_to_tile_xy, seg_stable_id, xyz_to_tile_id};
 
 // ── Batch sizes ───────────────────────────────────────────────────────────────
 
@@ -73,6 +73,7 @@ struct WayRecord {
 /// Edge data fetched from DuckDB for tile payload building.
 struct LmEdge {
     edge_idx: u32,
+    split_idx: u32,
     start_gers: [u8; 16],
     end_gers: [u8; 16],
     parent_gers: [u8; 16],
@@ -104,6 +105,8 @@ struct ResolvedRestriction {
     flags: u8,
     from_edge_idx: u32,
     to_edge_idx: u32,
+    from_split_idx: u32,
+    to_split_idx: u32,
     via_tile_x: u32,
     via_tile_y: u32,
 }
@@ -205,7 +208,7 @@ fn build_lm_tile_payload(
         r[14..18].copy_from_slice(&e.length_cm.to_le_bytes());
         r[18] = packed;
         seg_records.push(r);
-        seg_gers_ids.push(e.parent_gers);
+        seg_gers_ids.push(seg_stable_id(&e.parent_gers, e.split_idx));
     }
 
     let geom_vertex_count = geom_pool.len() as u32;
@@ -339,7 +342,7 @@ fn setup_duckdb(memory_mb_override: Option<u64>, temp_dir: &Path) -> Result<Conn
          CREATE TABLE node_ref_deltas (node_id BIGINT, delta BIGINT); \
          CREATE TABLE node_coords (id BIGINT, lon DOUBLE, lat DOUBLE); \
          CREATE TABLE q_edges ( \
-             edge_idx INTEGER, \
+             edge_idx INTEGER, split_idx INTEGER, \
              start_gers BLOB, end_gers BLOB, parent_gers BLOB, \
              geom_blob BLOB, length_cm INTEGER, \
              frc INTEGER, fow INTEGER, direction INTEGER, \
@@ -808,6 +811,7 @@ pub(crate) fn adapt_split_quantize(conn: &Connection, tile_zoom: u8, duckdb_memo
                 }
             }
 
+            let mut split_idx: u32 = 0;
             for (k, &start_idx) in split_starts.iter().enumerate() {
                 let end_idx = if k + 1 < split_starts.len() { split_starts[k + 1] } else { last };
 
@@ -848,7 +852,7 @@ pub(crate) fn adapt_split_quantize(conn: &Connection, tile_zoom: u8, duckdb_memo
                     geom_f64.last().unwrap().0, geom_f64.last().unwrap().1, tile_zoom,
                 );
                 edge_app.append_row(params![
-                    edge_idx as i64,
+                    edge_idx as i64, split_idx as i64,
                     start_gers.as_slice(), end_gers.as_slice(), parent_gers.as_slice(),
                     geom_blob.as_slice(), length_cm as i64,
                     frc as i64, fow as i64, direction as i64,
@@ -856,13 +860,14 @@ pub(crate) fn adapt_split_quantize(conn: &Connection, tile_zoom: u8, duckdb_memo
                 ]).context("append q_edge start-tile")?;
                 if (etx, ety) != (stx, sty) {
                     edge_app.append_row(params![
-                        edge_idx as i64,
+                        edge_idx as i64, split_idx as i64,
                         start_gers.as_slice(), end_gers.as_slice(), parent_gers.as_slice(),
                         geom_blob.as_slice(), length_cm as i64,
                         frc as i64, fow as i64, direction as i64,
                         etx as i64, ety as i64, xyz_to_tile_id(tile_zoom, etx, ety) as i64
                     ]).context("append q_edge end-tile")?;
                 }
+                split_idx += 1;
                 edge_idx += 1;
 
                 for (ngers, (nlon, nlat)) in [
@@ -999,17 +1004,19 @@ pub(crate) fn tile_from_duckdb(
     let mut seen_tile_ids: HashSet<u64>  = HashSet::new();
     let mut from_edge_map: HashMap<([u8; 16], [u8; 16]), u32> = HashMap::new();
     let mut to_edge_map:   HashMap<([u8; 16], [u8; 16]), u32> = HashMap::new();
+    let mut edge_split_idx: HashMap<u32, u32> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT edge_idx, start_gers, end_gers, parent_gers, tile_id FROM q_edges"
+            "SELECT edge_idx, split_idx, start_gers, end_gers, parent_gers, tile_id FROM q_edges"
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let edge_idx: u32 = row.get::<_, i64>(0)? as u32;
-            let start_blob:  Vec<u8> = row.get(1)?;
-            let end_blob:    Vec<u8> = row.get(2)?;
-            let parent_blob: Vec<u8> = row.get(3)?;
-            let tile_id: u64 = row.get::<_, i64>(4)? as u64;
+            let edge_idx:  u32 = row.get::<_, i64>(0)? as u32;
+            let split_idx: u32 = row.get::<_, i64>(1)? as u32;
+            let start_blob:  Vec<u8> = row.get(2)?;
+            let end_blob:    Vec<u8> = row.get(3)?;
+            let parent_blob: Vec<u8> = row.get(4)?;
+            let tile_id: u64 = row.get::<_, i64>(5)? as u64;
 
             let start_gers  = blob_to_gers(&start_blob);
             let end_gers    = blob_to_gers(&end_blob);
@@ -1021,6 +1028,7 @@ pub(crate) fn tile_from_duckdb(
             // idempotent here since both rows carry identical (parent_gers, end/start_gers).
             from_edge_map.insert((parent_gers, end_gers),   edge_idx);
             to_edge_map.insert(  (parent_gers, start_gers), edge_idx);
+            edge_split_idx.insert(edge_idx, split_idx);
         }
     }
     let total_tiles = seen_tile_ids.len();
@@ -1053,10 +1061,13 @@ pub(crate) fn tile_from_duckdb(
             let (via_tile_x, via_tile_y) = match node_to_tile.get(&via_gers) {
                 Some(&t) => t, None => { n_skipped += 1; continue; }
             };
+            let from_split_idx = edge_split_idx.get(&from_edge_idx).copied().unwrap_or(0);
+            let to_split_idx   = edge_split_idx.get(&to_edge_idx).copied().unwrap_or(0);
 
             resolved.push(ResolvedRestriction {
                 from_gers, via_gers, to_gers, flags,
                 from_edge_idx, to_edge_idx,
+                from_split_idx, to_split_idx,
                 via_tile_x, via_tile_y,
             });
         }
@@ -1088,7 +1099,7 @@ pub(crate) fn tile_from_duckdb(
 
     {
         let mut stmt = conn.prepare(
-            "SELECT edge_idx, start_gers, end_gers, parent_gers, geom_blob, length_cm, \
+            "SELECT edge_idx, split_idx, start_gers, end_gers, parent_gers, geom_blob, length_cm, \
                     frc, fow, direction, tile_x, tile_y, tile_id \
              FROM q_edges ORDER BY tile_id, edge_idx"
         ).context("prepare tiling scan")?;
@@ -1098,18 +1109,19 @@ pub(crate) fn tile_from_duckdb(
         let mut cur_edges: Vec<LmEdge>              = Vec::new();
 
         while let Some(row) = rows.next()? {
-            let edge_idx: u32 = row.get::<_, i64>(0)? as u32;
-            let start:  Vec<u8> = row.get(1)?;
-            let end:    Vec<u8> = row.get(2)?;
-            let parent: Vec<u8> = row.get(3)?;
-            let geom:   Vec<u8> = row.get(4)?;
-            let len_cm: u32     = row.get::<_, i64>(5)? as u32;
-            let frc:    u8      = row.get::<_, i64>(6)? as u8;
-            let fow:    u8      = row.get::<_, i64>(7)? as u8;
-            let dir:    u8      = row.get::<_, i64>(8)? as u8;
-            let tile_x: u32     = row.get::<_, i64>(9)? as u32;
-            let tile_y: u32     = row.get::<_, i64>(10)? as u32;
-            let tile_id: u64    = row.get::<_, i64>(11)? as u64;
+            let edge_idx:  u32 = row.get::<_, i64>(0)? as u32;
+            let split_idx: u32 = row.get::<_, i64>(1)? as u32;
+            let start:  Vec<u8> = row.get(2)?;
+            let end:    Vec<u8> = row.get(3)?;
+            let parent: Vec<u8> = row.get(4)?;
+            let geom:   Vec<u8> = row.get(5)?;
+            let len_cm: u32     = row.get::<_, i64>(6)? as u32;
+            let frc:    u8      = row.get::<_, i64>(7)? as u8;
+            let fow:    u8      = row.get::<_, i64>(8)? as u8;
+            let dir:    u8      = row.get::<_, i64>(9)? as u8;
+            let tile_x: u32     = row.get::<_, i64>(10)? as u32;
+            let tile_y: u32     = row.get::<_, i64>(11)? as u32;
+            let tile_id: u64    = row.get::<_, i64>(12)? as u64;
 
             if let Some((cx, cy, cid)) = cur_tile {
                 if (tile_x, tile_y) != (cx, cy) {
@@ -1124,6 +1136,7 @@ pub(crate) fn tile_from_duckdb(
             cur_tile = Some((tile_x, tile_y, tile_id));
             cur_edges.push(LmEdge {
                 edge_idx,
+                split_idx,
                 start_gers:  blob_to_gers(&start),
                 end_gers:    blob_to_gers(&end),
                 parent_gers: blob_to_gers(&parent),
@@ -1193,9 +1206,9 @@ fn flush_tile(
                 }
             } else {
                 cross.push(LmCrossTile {
-                    from_gers: r.from_gers,
+                    from_gers: seg_stable_id(&r.from_gers, r.from_split_idx),
                     via_node_local,
-                    to_gers: r.to_gers,
+                    to_gers: seg_stable_id(&r.to_gers, r.to_split_idx),
                     flags: r.flags,
                 });
             }

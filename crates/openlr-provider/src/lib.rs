@@ -252,8 +252,8 @@ mod integration {
                         lb: 0.0,
                         ub: (dnp_crow + seg_a.length_m + seg_b.length_m) * 5.0,
                     }),
-                    pos_offset: None,
-                    neg_offset: None,
+                    pos_offset: None, neg_offset: None,
+                    pos_offset_raw: None, neg_offset_raw: None,
                 },
                 Lrp {
                     coord: coord_1,
@@ -265,8 +265,8 @@ mod integration {
                     fow:    seg_b.fow,
                     lfrcnp: None,
                     dnp:    None,
-                    pos_offset: None,
-                    neg_offset: None,
+                    pos_offset: None, neg_offset: None,
+                    pos_offset_raw: None, neg_offset_raw: None,
                 },
             ]);
 
@@ -275,7 +275,7 @@ mod integration {
         let keys = prefetch_tile_keys(&loc_ref.lrps, &params, provider.zoom);
         provider.load_tiles(&keys).expect("prefetch tile load failed");
 
-        let result = decode(&loc_ref, provider.graph(), &params);
+        let result = decode(&loc_ref, provider.graph(), &params, 12);
         match result {
             Ok(decoded) => {
                 assert!(!decoded.path.is_empty(), "decoded path must be non-empty");
@@ -329,7 +329,7 @@ mod integration {
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
-        let result = decode(&loc_ref, provider.graph(), &params).expect("decode failed");
+        let result = decode(&loc_ref, provider.graph(), &params, 12).expect("decode failed");
         assert!(!result.path.is_empty());
 
         let wkt = path_to_wkt(
@@ -393,7 +393,7 @@ mod integration {
             provider.graph().nodes.len(),
         );
 
-        let result = decode(&loc_ref, provider.graph(), &params);
+        let result = decode(&loc_ref, provider.graph(), &params, 12);
         match result {
             Ok(decoded) => {
                 assert!(!decoded.path.is_empty(), "decoded path must be non-empty");
@@ -434,7 +434,7 @@ mod integration {
         eprintln!("\n--- Testing each leg in isolation (max_cands={}) ---", params.max_candidates_per_lrp);
         for leg in 0..full_ref.lrps.len() - 1 {
             let loc2 = LocationReference::line(vec![full_ref.lrps[leg].clone(), full_ref.lrps[leg + 1].clone()]);
-            let r = decode(&loc2, provider.graph(), &params);
+            let r = decode(&loc2, provider.graph(), &params, 12);
             eprintln!(
                 "  Leg {leg}: {} → {}  [lfrcnp={}, dnp=[{:.0},{:.0}]m]  → {}",
                 leg, leg + 1,
@@ -456,7 +456,7 @@ mod integration {
             eprintln!("\n--- lfrcnp_tolerance={tol}, unlimited candidates ---");
             for leg in 0..full_ref.lrps.len() - 1 {
                 let loc2 = LocationReference::line(vec![full_ref.lrps[leg].clone(), full_ref.lrps[leg + 1].clone()]);
-                let r = decode(&loc2, provider.graph(), &p2);
+                let r = decode(&loc2, provider.graph(), &p2, 12);
                 eprintln!(
                     "  Leg {leg}: {}",
                     match &r {
@@ -519,7 +519,7 @@ mod integration {
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
-        let result = decode(&loc_ref, provider.graph(), &params);
+        let result = decode(&loc_ref, provider.graph(), &params, 12);
         match result {
             Ok(decoded) => {
                 eprintln!("Leg-4 decode OK: {} segment(s)", decoded.path.len());
@@ -570,7 +570,7 @@ mod integration {
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
-        let result = decode(&loc_ref, provider.graph(), &params).expect("decode failed");
+        let result = decode(&loc_ref, provider.graph(), &params, 12).expect("decode failed");
         assert!(!result.path.is_empty(), "path must be non-empty");
 
         let pos_lb = result.pos_offset.map_or(0.0, |i| i.lb);
@@ -633,7 +633,7 @@ mod integration {
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
-        let result = decode(&loc_ref, provider.graph(), &params).expect("decode failed");
+        let result = decode(&loc_ref, provider.graph(), &params, 12).expect("decode failed");
 
         // Dump candidates from trace.
         if let Some(trace) = &result.trace {
@@ -731,7 +731,7 @@ mod integration {
         provider.load_tiles(&keys2).expect("tile load failed");
         eprintln!("Graph (500m): {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
-        let result2 = decode(&loc_ref, provider.graph(), &p2).expect("decode failed with 500m radius");
+        let result2 = decode(&loc_ref, provider.graph(), &p2, 12).expect("decode failed with 500m radius");
         if let Some(trace2) = &result2.trace {
             for event in &trace2.events {
                 if let DecodeEvent::CandidatesRanked { lrp_idx, accepted, .. } = event {
@@ -789,7 +789,7 @@ mod integration {
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
-        let result = decode(&loc_ref, provider.graph(), &params).expect("decode failed");
+        let result = decode(&loc_ref, provider.graph(), &params, 12).expect("decode failed");
         assert!(!result.path.is_empty(), "path must be non-empty");
 
         let pos_lb = result.pos_offset.map_or(0.0, |i| i.lb);

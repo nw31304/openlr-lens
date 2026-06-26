@@ -61,6 +61,7 @@ fn split_way(
 
     let mut edges: Vec<SplitEdge>  = Vec::with_capacity(split_starts.len());
     let mut nodes: Vec<NodeRecord> = Vec::with_capacity(split_starts.len() + 1);
+    let mut split_idx: u32 = 0;
 
     for (k, &start_idx) in split_starts.iter().enumerate() {
         let end_idx = if k + 1 < split_starts.len() { split_starts[k + 1] } else { last };
@@ -101,7 +102,9 @@ fn split_way(
             fow,
             direction,
             parent_gers_id:  parent_gers,
+            split_idx,
         });
+        split_idx += 1;
     }
 
     (edges, nodes)

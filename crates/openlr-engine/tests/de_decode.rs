@@ -145,7 +145,7 @@ fn decode_de_reference() {
     println!("Loaded {loaded}/{} tiles → {} segments, {} nodes",
         tile_keys.len(), loader.graph.segments.len(), loader.graph.nodes.len());
 
-    let result = decode(&loc_ref, &loader.graph, &params);
+    let result = decode(&loc_ref, &loader.graph, &params, 12);
     match result {
         Ok(r)  => println!("DECODE OK: {} segments in path", r.path.len()),
         Err(e) => println!("DECODE ERROR: {e}"),
