@@ -153,11 +153,11 @@ function describeStep(step) {
     }
 
     case 'route_search_started':
-      return `Leg ${step.leg} — A* route search started`;
+      return `Leg ${step.leg + 1} — A* route search started`;
 
     case 'astar_batch': {
       const n = step.nodes[0];
-      return `Leg ${step.leg} — A* node · g=${n.g_m.toFixed(0)} m · h=${n.h_m.toFixed(0)} m`;
+      return `Leg ${step.leg + 1} — A* node · g=${n.g_m.toFixed(0)} m · h=${n.h_m.toFixed(0)} m`;
     }
 
     case 'astar_terminated': {
@@ -173,33 +173,33 @@ function describeStep(step) {
       if (dist > 0) parts.push(`${dist} over-distance`);
       const skipStr = parts.length > 0 ? ` · skips: ${parts.join(', ')}` : '';
       if (reason === 'OpenSetExhausted' || reason?.OpenSetExhausted !== undefined) {
-        return `Leg ${step.leg} — A* exhausted · ${step.nodes_expanded} nodes expanded${skipStr}`;
+        return `Leg ${step.leg + 1} — A* exhausted · ${step.nodes_expanded} nodes expanded${skipStr}`;
       }
       const limit = reason?.ExpansionLimitHit?.limit ?? 0;
-      return `Leg ${step.leg} — A* limit hit (${step.nodes_expanded}/${limit})${skipStr} · raise max_astar_expansions`;
+      return `Leg ${step.leg + 1} — A* limit hit (${step.nodes_expanded}/${limit})${skipStr} · raise max_astar_expansions`;
     }
 
     case 'route_found':
-      return `Leg ${step.leg} — route found · ${step.length_m.toFixed(0)} m · ${step.path.length} seg${step.path.length !== 1 ? 's' : ''}`;
+      return `Leg ${step.leg + 1} — route found · ${step.length_m.toFixed(0)} m · ${step.path.length} seg${step.path.length !== 1 ? 's' : ''}`;
 
     case 'route_failed': {
       const reason = step.reason;
       if (!reason || reason === 'NoPathFound' || reason?.NoPathFound !== undefined) {
-        return `Leg ${step.leg} — route FAILED (no path found)`;
+        return `Leg ${step.leg + 1} — route FAILED (no path found)`;
       }
       if (reason.DnpOutOfRange) {
         const { actual_m, window } = reason.DnpOutOfRange;
         const lb = window?.lb ?? 0, ub = window?.ub ?? 0;
         const over  = actual_m > ub ? `${(actual_m - ub).toFixed(0)} m over` : null;
         const under = actual_m < lb ? `${(lb - actual_m).toFixed(0)} m under` : null;
-        return `Leg ${step.leg} — DNP mismatch · ${actual_m.toFixed(0)} m vs [${lb.toFixed(0)}, ${ub.toFixed(0)}] m (${over ?? under ?? 'failed'})`;
+        return `Leg ${step.leg + 1} — DNP mismatch · ${actual_m.toFixed(0)} m vs [${lb.toFixed(0)}, ${ub.toFixed(0)}] m (${over ?? under ?? 'failed'})`;
       }
-      return `Leg ${step.leg} — route FAILED`;
+      return `Leg ${step.leg + 1} — route FAILED`;
     }
 
     case 'dnp_checked': {
       const lb = step.interval?.lb ?? 0, ub = step.interval?.ub ?? 0;
-      return `Leg ${step.leg} — DNP ${step.actual_m.toFixed(0)} m ∈ [${lb.toFixed(0)}, ${ub.toFixed(0)}] ${step.passed ? '✓' : '✗'}`;
+      return `Leg ${step.leg + 1} — DNP ${step.actual_m.toFixed(0)} m ∈ [${lb.toFixed(0)}, ${ub.toFixed(0)}] ${step.passed ? '✓' : '✗'}`;
     }
 
     case 'offset_applied': {
@@ -212,7 +212,7 @@ function describeStep(step) {
       const o = step.outcome;
       if (o.Success)       return `✓ Complete · ${o.Success.path.length} segments`;
       if (o.NoCandidates)  return `✗ No candidates for LRP ${o.NoCandidates.lrp_idx}`;
-      if (o.NoRoute)       return `✗ No route for leg ${o.NoRoute.leg}`;
+      if (o.NoRoute)       return `✗ No route for leg ${o.NoRoute.leg + 1}`;
       return '✗ Decode failed';
     }
 

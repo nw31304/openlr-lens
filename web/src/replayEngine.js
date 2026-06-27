@@ -327,7 +327,7 @@ function applyStep(s, step, maxGTotal) {
       const o     = step.outcome;
       if (o.Success)        s.statusText = `✓ Complete — ${o.Success.path.length} segments`;
       else if (o.NoCandidates) s.statusText = `✗ No candidates for LRP ${o.NoCandidates.lrp_idx}`;
-      else if (o.NoRoute)   s.statusText = `✗ No route for leg ${o.NoRoute.leg}`;
+      else if (o.NoRoute)   s.statusText = `✗ No route for leg ${o.NoRoute.leg + 1}`;
       break;
     }
   }
