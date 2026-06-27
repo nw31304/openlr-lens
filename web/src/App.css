@@ -348,6 +348,166 @@ html, body, #root, .app {
   overflow: hidden;
 }
 
+/* ── Reference section (top half of left panel) ─────────────────────────── */
+
+.ref-area {
+  flex-shrink: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 80px;
+}
+
+.panel-split-handle {
+  flex-shrink: 0;
+  height: 6px;
+  background: #1a1a2e;
+  border-top: 1px solid #252535;
+  border-bottom: 1px solid #252535;
+  cursor: row-resize;
+  position: relative;
+  user-select: none;
+}
+.panel-split-handle::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 2px;
+  background: #383858;
+  border-radius: 2px;
+}
+.panel-split-handle:hover { background: #222238; }
+.panel-split-handle:hover::after { background: #4a4a70; }
+
+.result-decode-area {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.ref-section {
+  padding-bottom: 6px;
+}
+
+.ref-sect {
+  border-bottom: 1px solid #1e1e30;
+}
+
+.ref-sect-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  color: #8888aa;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-align: left;
+  user-select: none;
+}
+.ref-sect-hdr:hover { background: rgba(255,255,255,0.03); color: #aaaac8; }
+.ref-sect-arrow { font-size: 9px; color: #555566; flex-shrink: 0; }
+
+.ref-sect-body { padding: 2px 0 8px; }
+
+.ref-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 2px 12px 2px 16px;
+  gap: 8px;
+  font-size: 11px;
+  min-height: 20px;
+}
+
+.ref-label {
+  color: #666680;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ref-val {
+  color: #b8b8d8;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.ref-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #2a2a42;
+  color: #555570;
+  font-size: 9px;
+  font-style: normal;
+  cursor: help;
+  flex-shrink: 0;
+  user-select: none;
+}
+.ref-help:hover { background: #383858; color: #9999bb; }
+
+.lrp-card {
+  margin: 4px 8px 0;
+  border: 1px solid #1e1e34;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.lrp-card-hdr {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  background: #131325;
+  font-size: 11px;
+  font-weight: 600;
+  color: #7070a0;
+  border-bottom: 1px solid #1e1e34;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  transition: background 0.1s, color 0.1s;
+}
+.lrp-card-hdr:hover {
+  background: #1c1c38;
+  color: #a0a0cc;
+}
+.lrp-card-hdr:active {
+  background: #22224a;
+}
+
+.lrp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.lrp-dot-first { background: #22cc55; }
+.lrp-dot-last  { background: #ff4455; }
+.lrp-dot-mid   { background: #4488ff; }
+
+/* ── Decode result area ───────────────────────────────────────────────────── */
+
 .result-header {
   display: flex;
   align-items: center;
@@ -380,7 +540,6 @@ html, body, #root, .app {
 }
 
 .seg-table-wrap {
-  max-height: 440px; /* ~20 rows × ~22 px each */
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -844,11 +1003,19 @@ html, body, #root, .app {
   background: rgba(20, 20, 36, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  /* drop-shadow (not box-shadow) so the filter is applied to the entire
+     rendered shape, including the ::before/::after callout arrow triangles. */
+  filter: drop-shadow(0 3px 10px rgba(0, 0, 0, 0.65));
   font-size: 13px;
   color: #e8e8f0;
   z-index: 20;
+  /* Allow map clicks to pass through the popup's bounding box so the route
+     stays clickable even when the popup is positioned nearby. Interactive
+     elements inside restore pointer-events themselves. */
+  pointer-events: none;
 }
+
+/* Callout tip SVG is rendered inline by TipSvg() in Map.jsx with position:absolute. */
 
 .seg-info-header {
   background: rgba(44, 62, 80, 0.9);
@@ -859,6 +1026,7 @@ html, body, #root, .app {
   justify-content: space-between;
   align-items: center;
   cursor: grab;
+  pointer-events: auto;
 }
 .seg-info-header:active {
   cursor: grabbing;
@@ -885,6 +1053,7 @@ html, body, #root, .app {
 
 .seg-info-body {
   padding: 10px 12px;
+  pointer-events: auto;
 }
 
 .seg-info-body table {

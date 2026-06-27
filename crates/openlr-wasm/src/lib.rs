@@ -31,7 +31,7 @@ use wasm_bindgen::prelude::*;
 use openlr_codec::{decode_v3_base64, decode_tpeg_hex, decode_tpeg_base64};
 use openlr_codec::lrp::{LocationReference, LocationType, Orientation, SideOfRoad};
 use openlr_engine::{decode as engine_decode, DecodeError, DecodeParams, Preset, prefetch_tile_keys, path_to_wkt, path_band_wkt};
-use openlr_graph::polyline_length_m;
+use openlr_graph::{polyline_length_m, Direction};
 use openlr_engine::trace::TraversalDir;
 use openlr_provider::TileLoader;
 use serde::Serialize;
@@ -64,6 +64,10 @@ struct NeedsTileResult {
 struct SegmentInfo {
     frc: u8,
     fow: u8,
+    /// Traversal direction: "Both", "Forward", or "Backward".
+    direction: &'static str,
+    /// Segment length in metres (precomputed; not re-derived from geometry).
+    length_m: f64,
     /// OSM way ID, present when the tile was built from OSM data.
     #[serde(skip_serializing_if = "Option::is_none")]
     osm_way_id: Option<i64>,
@@ -366,6 +370,12 @@ impl Decoder {
                 SegmentInfo {
                     frc: seg.frc,
                     fow: seg.fow,
+                    direction: match seg.direction {
+                        Direction::Both     => "Both",
+                        Direction::Forward  => "Forward",
+                        Direction::Backward => "Backward",
+                    },
+                    length_m: (seg.length_m * 10.0).round() / 10.0,
                     osm_way_id: seg.osm_way_id(),
                     tile,
                     local_index,

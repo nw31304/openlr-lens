@@ -96,21 +96,17 @@ export default function App() {
         <div className="map-area">
           <MapView tilesBase={tilesBase} ready={ready} />
 
-          {/* Panel re-open tabs, shown only when the panel is collapsed */}
-          {!showResult && (
-            <button
-              className="panel-tab panel-tab-left"
-              onClick={toggleResult}
-              title="Open results panel"
-            >▶</button>
-          )}
-          {!showTrace && (
-            <button
-              className="panel-tab panel-tab-right"
-              onClick={toggleTrace}
-              title="Open trace panel"
-            >◀</button>
-          )}
+          {/* Panel edge tabs — always visible; arrow direction shows open/closed state */}
+          <button
+            className="panel-tab panel-tab-left"
+            onClick={toggleResult}
+            title={showResult ? 'Collapse results panel' : 'Open results panel'}
+          >{showResult ? '◀' : '▶'}</button>
+          <button
+            className="panel-tab panel-tab-right"
+            onClick={toggleTrace}
+            title={showTrace ? 'Collapse trace panel' : 'Open trace panel'}
+          >{showTrace ? '▶' : '◀'}</button>
         </div>
 
         {/* ── Right panel ──────────────────────────────────── */}

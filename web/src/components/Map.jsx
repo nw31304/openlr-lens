@@ -7,14 +7,67 @@ import { useDraggable } from '../hooks.js';
 import { emptyState, applyStep, computeVisualState, stateToGeoJSON } from '../replayEngine.js';
 
 
-function popupStyle(anchor, w = 260, h = 200) {
-  if (!anchor) return undefined;
-  const margin = 12;
-  let left = anchor.x + margin;
-  let top  = anchor.y + margin;
-  if (left + w > window.innerWidth  - margin) left = anchor.x - w - margin;
-  if (top  + h > window.innerHeight - margin) top  = anchor.y - h - margin;
-  return { position: 'absolute', left: Math.max(margin, left), top: Math.max(margin, top), right: 'auto', bottom: 'auto' };
+// Inline SVG tip for speech bubbles — above: tip points down, below: tip points up.
+// W/H are in px; tipLeft is the center of the tip within the popup (pixels from popup left).
+function TipSvg({ placement, tipLeft }) {
+  if (!placement || tipLeft == null) return null;
+  const W = 24, H = 12;
+  const left = tipLeft - W / 2;
+  const fill   = 'rgba(20,20,36,0.97)';
+  const stroke = 'rgba(255,255,255,0.18)';
+  const base = { position: 'absolute', left, width: W, height: H, display: 'block', pointerEvents: 'none' };
+  if (placement === 'above') {
+    return (
+      <svg style={{ ...base, bottom: -H }} viewBox={`0 0 ${W} ${H}`}>
+        <polygon  points={`0,0 ${W/2},${H} ${W},0`}         fill={fill} />
+        <polyline points={`0,0 ${W/2},${H} ${W},0`}         fill="none" stroke={stroke} strokeWidth="1" />
+      </svg>
+    );
+  }
+  return (
+    <svg style={{ ...base, top: -H }} viewBox={`0 0 ${W} ${H}`}>
+      <polygon  points={`0,${H} ${W/2},0 ${W},${H}`}        fill={fill} />
+      <polyline points={`0,${H} ${W/2},0 ${W},${H}`}        fill="none" stroke={stroke} strokeWidth="1" />
+    </svg>
+  );
+}
+
+// Returns { style, placement, tipLeft } for a speech-bubble popup.
+// For callout-above: pins popup.bottom = anchor.y − tipH via the CSS `bottom`
+// property (relative to the map container height).  No height estimate needed —
+// the popup simply grows upward from that pinned edge, so the SVG tip child at
+// `bottom: -tipH` always lands exactly on anchor.y regardless of content height.
+// For callout-below: sets top = anchor.y + tipH; popup grows downward.
+function popupPlacement(anchor, w = 260, containerW = null, containerH = null) {
+  if (!anchor) return { style: undefined, placement: null, tipLeft: w / 2 };
+  const edge = 8, tipH = 12;
+  const cw = containerW || window.innerWidth;
+  const ch = containerH || window.innerHeight;
+
+  // Centre popup on anchor, then clamp to stay inside the container.
+  const rawLeft = anchor.x - w / 2;
+  const left    = Math.max(edge, Math.min(rawLeft, cw - w - edge));
+
+  // Place above when the anchor is in the lower half — more room to grow upward.
+  const above = anchor.y > ch / 2;
+
+  // tipLeft: horizontal center of the tip within the popup (clamped 12–w–12).
+  const tipLeft = Math.max(12, Math.min(anchor.x - left, w - 12));
+
+  if (above) {
+    // `bottom: ch - anchor.y + tipH` → popup.bottom = anchor.y − tipH.
+    // SVG tip child at `bottom: -tipH` → tip visual bottom = anchor.y. ✓
+    return {
+      style: { position: 'absolute', left, bottom: ch - anchor.y + tipH, top: 'auto', right: 'auto' },
+      placement: 'above',
+      tipLeft,
+    };
+  }
+  return {
+    style: { position: 'absolute', left, top: anchor.y + tipH, bottom: 'auto', right: 'auto' },
+    placement: 'below',
+    tipLeft,
+  };
 }
 import { decodeTile } from '../tileDecoder.js';
 import { diagnoseSegment } from '../diagnosis.js';
@@ -217,6 +270,19 @@ function fmtDist(m) {
   return `${(m / 1000).toFixed(2)} km`;
 }
 
+// Interpolated midpoint of a polyline by vertex index — handles 2-vertex segments
+// (where Math.floor(n/2) = 1 = endpoint) by interpolating between the two flanking vertices.
+function polylineMid(coords) {
+  if (!coords?.length) return null;
+  if (coords.length === 1) return coords[0];
+  const t = (coords.length - 1) / 2;
+  const i = Math.floor(t), j = Math.ceil(t);
+  if (i === j) return coords[i];
+  const f = t - i;
+  return [coords[i][0] + f * (coords[j][0] - coords[i][0]),
+          coords[i][1] + f * (coords[j][1] - coords[i][1])];
+}
+
 // Clip a polyline [lon,lat][] to start at the nearest point to (snapLon, snapLat).
 // Returns the tail portion of the polyline from that snap point onward.
 function clipGeomFromPoint(coords, snapLon, snapLat) {
@@ -344,6 +410,8 @@ export default function MapView({ tilesBase, ready }) {
   const routePulseRef   = useRef(null);   // rAF handle for route-found pulse animation
   const candPanelRef        = useRef(null);
   const candidatePopupRef   = useRef(null);
+  const pendingPopupCoordRef    = useRef(null); // geographic coord to project after fitBounds animation
+  const pendingCandAnchorCoordRef = useRef(null); // candidate popup snap coord, same deferred scheme
 
   const [status, setStatus] = useState(null);
   const [infoProps, setInfoProps] = useState(null);
@@ -414,6 +482,7 @@ export default function MapView({ tilesBase, ready }) {
 
     if (!candidatePopup?.snap_lon) {
       setCandAnchor(null);
+      pendingCandAnchorCoordRef.current = null;
       // Hide direction arrows when no candidate is selected
       if (map?.getLayer('replay-candidates-arrow')) {
         map.setLayoutProperty('replay-candidates-arrow', 'visibility', 'none');
@@ -422,8 +491,25 @@ export default function MapView({ tilesBase, ready }) {
       return;
     }
     if (!map) return;
-    const pt = map.project([candidatePopup.snap_lon, candidatePopup.snap_lat]);
-    setCandAnchor({ x: pt.x, y: pt.y });
+
+    // Defer anchor projection until after the fitBounds animation (triggered by
+    // the traceHighlightSegIds effect in the same render cycle) completes.
+    // setTimeout(0) fallback handles the case where the segment was already
+    // highlighted (no fitBounds called), so traceHighlightSegIds effect won't fire.
+    // Anchor to segment midpoint (not snap point, which lands at or near an endpoint)
+    const segFeat = candidatePopup.segment_id != null ? getSegGeomCache().get(candidatePopup.segment_id) : null;
+    const anchorCoord = polylineMid(segFeat?.geometry?.coordinates)
+      ?? [candidatePopup.snap_lon, candidatePopup.snap_lat];
+    pendingCandAnchorCoordRef.current = anchorCoord;
+    setCandAnchor(null);
+    const fallbackId = setTimeout(() => {
+      if (pendingCandAnchorCoordRef.current) {
+        pendingCandAnchorCoordRef.current = null;
+        const pt = mapRef.current?.project(anchorCoord);
+        if (pt) setCandAnchor({ x: pt.x, y: pt.y });
+      }
+    }, 0);
+
     // Show arrows filtered to the selected traversal direction only
     if (map.getLayer('replay-candidates-arrow') && candidatePopup.segment_id != null) {
       map.setFilter('replay-candidates-arrow', ['all',
@@ -432,6 +518,7 @@ export default function MapView({ tilesBase, ready }) {
       ]);
       map.setLayoutProperty('replay-candidates-arrow', 'visibility', 'visible');
     }
+    return () => clearTimeout(fallbackId);
   }, [candidatePopup]);
 
   // Open the segment info popup when ResultPanel (or decoded-path click) requests it.
@@ -444,25 +531,17 @@ export default function MapView({ tilesBase, ready }) {
     const feat = segId >= 0 ? getSegGeomCache().get(segId) : null;
     if (!feat) return;
 
-    // Project the segment's geographic midpoint to screen coordinates.
-    // Clamp x so the popup (260px wide + margins) doesn't overlap the result
-    // panel, which occupies the rightmost ~336px (width 320 + right: 16px).
-    let anchor = null;
-    const map = mapRef.current;
-    if (map) {
-      const coords = feat.geometry.coordinates;
-      const mid = coords[Math.floor(coords.length / 2)];
-      const pt = map.project(mid);
-      const POPUP_W = 260 + 12 * 2;
-      const RESULT_PANEL_W = 320 + 16 + 12; // width + right margin + gap
-      const maxSafeX = window.innerWidth - RESULT_PANEL_W - POPUP_W;
-      anchor = { x: Math.min(pt.x, maxSafeX), y: pt.y };
-    }
-
+    // Set popup content immediately, but defer anchor projection.
+    // The highlightedSegment effect (running in the same render cycle) will call
+    // fitBounds and then register the moveend listener — storing the target coord
+    // in pendingPopupCoordRef lets it project AFTER the animation settles.
     setLrpInfo(null);
-    setInfoAnchor(anchor);
+    setInfoAnchor(null);
     setInfoProps({ ...feat.properties, segment_id: segId >= 0 ? segId : null });
     setSegDiagnosis(null);
+
+    const coords = feat.geometry.coordinates;
+    pendingPopupCoordRef.current = polylineMid(coords);
   }, [requestedInfoSegment]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Always-current ref so the highlight effect can read decodeResult without
@@ -917,10 +996,18 @@ export default function MapView({ tilesBase, ready }) {
     map.on('zoomend', () => loadVisibleTiles(map));
 
     // Resize the map whenever its container changes size (panel open/close).
-    const resizeObs = new ResizeObserver(() => map.resize());
+    // Debounce so the WebGL canvas only resets once after a CSS transition
+    // completes — resizing on every animation frame during a width transition
+    // causes one blank frame per resize call, which is visible as flicker.
+    let resizeTimer = null;
+    const resizeObs = new ResizeObserver(() => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => map.resize(), 220);
+    });
     resizeObs.observe(mapContainer.current);
 
     return () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
       resizeObs.disconnect();
       if (pulseRef.current)         { cancelAnimationFrame(pulseRef.current);         pulseRef.current         = null; }
       if (frontierPulseRef.current) { cancelAnimationFrame(frontierPulseRef.current); frontierPulseRef.current = null; }
@@ -1086,9 +1173,13 @@ export default function MapView({ tilesBase, ready }) {
     const props = bestFeat.properties;
     const [z, x, y] = props.tile.split('/').map(Number);
     const segId = getSegmentId(z, x, y, props.local_index);
+    const segCoords = bestFeat.geometry?.coordinates;
+    if (segCoords?.length) {
+      pendingPopupCoordRef.current = polylineMid(segCoords);
+    }
     setHighlightedSegment({ tile: props.tile, local_index: props.local_index });
     setInfoProps({ ...props, segment_id: segId >= 0 ? segId : null });
-    setInfoAnchor({ x: e.point.x, y: e.point.y });
+    setInfoAnchor(null);
     setLrpInfo(null);
     setSegDiagnosis(null);
     e.originalEvent.stopPropagation();
@@ -1118,15 +1209,19 @@ export default function MapView({ tilesBase, ready }) {
       if (!feat) continue;
       const coords = feat.geometry.coordinates;
       // Use midpoint of the segment for distance comparison.
-      const mid = coords[Math.floor(coords.length / 2)];
+      const mid = polylineMid(coords);
       const dx = mid[0] - lng, dy = mid[1] - lat;
       const d = dx * dx + dy * dy;
       if (d < bestDist) { bestDist = d; best = { feat, segId }; }
     }
 
     if (best) {
+      const bestCoords = best.feat.geometry?.coordinates;
+      if (bestCoords?.length) {
+        pendingPopupCoordRef.current = polylineMid(bestCoords);
+      }
       setLrpInfo(null);
-      setInfoAnchor({ x: e.point.x, y: e.point.y });
+      setInfoAnchor(null);
       setInfoProps({ ...best.feat.properties, segment_id: best.segId });
       setSegDiagnosis(null);
       setHighlightedSegment({
@@ -1216,6 +1311,17 @@ export default function MapView({ tilesBase, ready }) {
         { padding: 160, duration: 400, maxZoom: 18 },
       );
 
+      // If a popup anchor is waiting, register the moveend listener HERE — after
+      // fitBounds — so it can't be triggered by any prior map movement.
+      if (pendingPopupCoordRef.current) {
+        const coord = pendingPopupCoordRef.current;
+        pendingPopupCoordRef.current = null;
+        map.once('moveend', () => {
+          const pt = map.project(coord);
+          setInfoAnchor({ x: Math.max(pt.x, 20), y: pt.y });
+        });
+      }
+
       // Sinusoidal halo pulse
       const t0 = performance.now();
       const pulse = (now) => {
@@ -1235,6 +1341,13 @@ export default function MapView({ tilesBase, ready }) {
           ['==', ['get', 'tile'],        highlightedSegment.tile],
           ['==', ['get', 'local_index'], highlightedSegment.local_index],
         ]);
+      }
+      // No fitBounds — project pending popup anchor immediately
+      if (pendingPopupCoordRef.current) {
+        const coord = pendingPopupCoordRef.current;
+        pendingPopupCoordRef.current = null;
+        const pt = map.project(coord);
+        setInfoAnchor({ x: Math.max(pt.x, 20), y: pt.y });
       }
     }
   }, [highlightedSegment, traceHighlightSegIds]); // ← decodeResult excluded; read via ref
@@ -1312,22 +1425,48 @@ export default function MapView({ tilesBase, ready }) {
       );
     }
 
+    // Consume the pending candidate anchor (set by candidatePopup effect) if
+    // fitBounds was just called — project it in the same moveend callback.
+    const pendingCandCoord = (allCoords.length >= 2) ? pendingCandAnchorCoordRef.current : null;
+    if (pendingCandCoord) pendingCandAnchorCoordRef.current = null;
+
     // Show segment info popup for single-segment trace clicks, but not
     // when a candidate evaluation popup is already being shown.
+    let moveEndHandler = null;
+
     if (features.length === 1 && !candidatePopupRef.current) {
       const feat = features[0];
       // segId is the WASM runtime segment_id — include it so the popup
       // doesn't show "— (decode first)" for Internal ID.
       setInfoProps({ ...feat.properties, segment_id: traceHighlightSegIds[0] });
+      setInfoAnchor(null); // defer until fitBounds animation completes
       const coords = feat.geometry?.coordinates;
-      if (coords?.length) {
-        const mid = coords[Math.floor(coords.length / 2)];
-        const pixel = map.project(mid);
-        const POPUP_W = 260 + 12 * 2;
-        const RESULT_PANEL_W = 320 + 16 + 12;
-        const maxSafeX = window.innerWidth - RESULT_PANEL_W - POPUP_W;
-        setInfoAnchor({ x: Math.min(pixel.x, maxSafeX), y: pixel.y });
+      if (coords?.length && allCoords.length >= 2) {
+        const mid = polylineMid(coords);
+        moveEndHandler = () => {
+          const pixel = map.project(mid);
+          setInfoAnchor({ x: Math.max(pixel.x, 20), y: pixel.y });
+          if (pendingCandCoord) {
+            const pt = map.project(pendingCandCoord);
+            setCandAnchor({ x: pt.x, y: pt.y });
+          }
+        };
+      } else if (coords?.length) {
+        // No fitBounds — project immediately
+        const pixel = map.project(polylineMid(coords));
+        setInfoAnchor({ x: Math.max(pixel.x, 20), y: pixel.y });
       }
+    } else if (pendingCandCoord) {
+      // Candidate popup open, no segment info popup — just project the cand anchor
+      moveEndHandler = () => {
+        const pt = map.project(pendingCandCoord);
+        setCandAnchor({ x: pt.x, y: pt.y });
+      };
+    }
+
+    if (moveEndHandler) {
+      map.once('moveend', moveEndHandler);
+      return () => map.off('moveend', moveEndHandler);
     }
   }, [traceHighlightSegIds]);
 
@@ -1858,9 +1997,12 @@ export default function MapView({ tilesBase, ready }) {
       {status && <div className="map-status">{status}</div>}
 
       {/* Segment info panel */}
-      {infoProps && (
-        <div ref={segPanelRef} className="seg-info-panel"
-          style={segPos ? { position: 'absolute', left: segPos.left, top: segPos.top, right: 'auto', bottom: 'auto' } : popupStyle(infoAnchor)}>
+      {infoProps && infoAnchor && (() => {
+        const { style: segStyle, placement: segPl, tipLeft: segTipLeft } = popupPlacement(infoAnchor, 260, mapContainer.current?.offsetWidth, mapContainer.current?.offsetHeight);
+        return (
+        <div ref={segPanelRef}
+          className={`seg-info-panel${!segPos && segPl ? ` callout-${segPl}` : ''}`}
+          style={segPos ? { position: 'absolute', left: segPos.left, top: segPos.top, right: 'auto', bottom: 'auto' } : segStyle}>
           <header className="seg-info-header" onMouseDown={segMouseDown}>
             <span>
               Segment{infoProps.source_id != null ? ` ${infoProps.source_id}` : ''}
@@ -1933,13 +2075,18 @@ export default function MapView({ tilesBase, ready }) {
               </button>
             </div>
           )}
+          {!segPos && <TipSvg placement={segPl} tipLeft={segTipLeft} />}
         </div>
-      )}
+        );
+      })()}
 
       {/* LRP info panel */}
-      {lrpInfo && (
-        <div ref={lrpPanelRef} className="seg-info-panel"
-          style={lrpPos ? { position: 'absolute', left: lrpPos.left, top: lrpPos.top, right: 'auto', bottom: 'auto' } : popupStyle(infoAnchor)}>
+      {lrpInfo && (() => {
+        const { style: lrpStyle, placement: lrpPl, tipLeft: lrpTipLeft } = popupPlacement(infoAnchor, 260, mapContainer.current?.offsetWidth, mapContainer.current?.offsetHeight);
+        return (
+        <div ref={lrpPanelRef}
+          className={`seg-info-panel${!lrpPos && lrpPl ? ` callout-${lrpPl}` : ''}`}
+          style={lrpPos ? { position: 'absolute', left: lrpPos.left, top: lrpPos.top, right: 'auto', bottom: 'auto' } : lrpStyle}>
           <header className="seg-info-header" onMouseDown={lrpMouseDown}>
             <span>LRP {lrpInfo.index + 1}</span>
             <button className="seg-info-close" onClick={() => { setLrpInfo(null); setInfoAnchor(null); }}>✕</button>
@@ -1984,12 +2131,18 @@ export default function MapView({ tilesBase, ready }) {
               </tbody>
             </table>
           </div>
+          {!lrpPos && <TipSvg placement={lrpPl} tipLeft={lrpTipLeft} />}
         </div>
-      )}
+        );
+      })()}
 
       {/* Node intersection popup */}
-      {nodeInfo && (
-        <div className="seg-info-panel" style={popupStyle(nodeAnchor)}>
+      {nodeInfo && (() => {
+        const { style: nodeStyle, placement: nodePl, tipLeft: nodeTipLeft } = popupPlacement(nodeAnchor, 260, mapContainer.current?.offsetWidth, mapContainer.current?.offsetHeight);
+        return (
+        <div
+          className={`seg-info-panel${nodePl ? ` callout-${nodePl}` : ''}`}
+          style={nodeStyle}>
           <header className="seg-info-header">
             <span>Node {nodeInfo.local_index}</span>
             <button className="seg-info-close" onClick={() => { setNodeInfo(null); setNodeAnchor(null); }}>✕</button>
@@ -2008,13 +2161,18 @@ export default function MapView({ tilesBase, ready }) {
               </tbody>
             </table>
           </div>
+          <TipSvg placement={nodePl} tipLeft={nodeTipLeft} />
         </div>
-      )}
+        );
+      })()}
 
       {/* Candidate info popup */}
-      {candidatePopup && (
-        <div ref={candPanelRef} className="seg-info-panel cand-panel"
-          style={candPos ? { position: 'absolute', left: candPos.left, top: candPos.top, right: 'auto', bottom: 'auto' } : popupStyle(candAnchor, 320, 320)}>
+      {candidatePopup && candAnchor && (() => {
+        const { style: candStyle, placement: candPl, tipLeft: candTipLeft } = popupPlacement(candAnchor, 320, mapContainer.current?.offsetWidth, mapContainer.current?.offsetHeight);
+        return (
+        <div ref={candPanelRef}
+          className={`seg-info-panel cand-panel${!candPos && candPl ? ` callout-${candPl}` : ''}`}
+          style={candPos ? { position: 'absolute', left: candPos.left, top: candPos.top, right: 'auto', bottom: 'auto' } : candStyle}>
           <header className="seg-info-header" onMouseDown={candMouseDown}>
             <span>
               LRP {candidatePopup.lrp_idx + 1} candidate
@@ -2025,8 +2183,10 @@ export default function MapView({ tilesBase, ready }) {
           <div className="seg-info-body">
             <CandidatePopupBody p={candidatePopup} />
           </div>
+          {!candPos && <TipSvg placement={candPl} tipLeft={candTipLeft} />}
         </div>
-      )}
+        );
+      })()}
 
       {/* FRC Legend — only shown when the Segs overlay is active */}
       {showSegmentLayer && (

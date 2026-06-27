@@ -578,7 +578,7 @@ function ResultSection({ decodeResult }) {
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 export default function TracePanel() {
-  const { decodeResult, openlrString, params, setParam, toggleTrace,
+  const { decodeResult, openlrString, params, setParam,
           setTraceHighlight, setTraceLrpFocus, replaySteps, setCandidatePopup } = useStore();
 
   const traceLevel = params.trace_level ?? 'Summary';
@@ -616,7 +616,6 @@ export default function TracePanel() {
           <button className="tp-copy-btn" onClick={copyJson} disabled={!decodeResult} title="Copy decode result + trace JSON">
             Copy JSON
           </button>
-          <button className="tp-close-btn" onClick={toggleTrace} title="Close trace panel">✕</button>
         </div>
       </div>
 
