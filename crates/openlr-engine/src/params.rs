@@ -139,12 +139,21 @@ pub struct DecodeParams {
     /// Compensates for FRC mapping differences between encoder and decoder maps.
     pub lfrcnp_tolerance: u8,
 
+    // ── Routing ───────────────────────────────────────────────────────────────
+    /// Maximum total candidate-combination routing attempts across all legs
+    /// (0 = unlimited).  Caps the Kᴺ search space: for N LRPs each with K
+    /// candidates the full space is Kᴺ⁻¹; this fires when that bound is hit
+    /// before any combination routes successfully.
+    #[serde(default = "default_max_routing_attempts")]
+    pub max_routing_attempts: usize,
+
     // ── Trace ─────────────────────────────────────────────────────────────────
     pub trace_level: TraceLevel,
 }
 
 fn default_max_bearing_deviation_deg() -> f64 { 45.0 }
 fn default_max_candidate_score()        -> f64 { 1.5 }
+fn default_max_routing_attempts()       -> usize { 10 }
 
 impl DecodeParams {
     pub fn preset(p: Preset) -> Self {
@@ -168,6 +177,7 @@ impl DecodeParams {
                 max_path_search_factor:          4.0,
                 max_astar_expansions:         50_000,
                 lfrcnp_tolerance:                  2,
+                max_routing_attempts:              0,
                 trace_level: TraceLevel::Summary,
             },
             Preset::Default => Self::default(),
@@ -190,6 +200,7 @@ impl DecodeParams {
                 max_path_search_factor:          3.0,
                 max_astar_expansions:              0,
                 lfrcnp_tolerance:                  0,
+                max_routing_attempts:              5,
                 trace_level: TraceLevel::Summary,
             },
         }
@@ -217,6 +228,7 @@ impl Default for DecodeParams {
             max_path_search_factor:          5.0,
             max_astar_expansions:        100_000,
             lfrcnp_tolerance:                  2,
+            max_routing_attempts:             10,
             trace_level: TraceLevel::Summary,
         }
     }

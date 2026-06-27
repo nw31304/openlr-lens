@@ -212,8 +212,18 @@ pub fn decode(
         } else if let Some(r) = precheck {
             Some(r)
         } else {
+            let cap = params.max_routing_attempts;
+            let mut route_attempts = 0usize;
             let found = 'search: {
                 for indices in Gen::new(&all_candidates) {
+                    if cap > 0 && route_attempts >= cap {
+                        t.push_summary(DecodeEvent::RouteAttemptsExhausted {
+                            limit: cap,
+                            attempted: route_attempts,
+                        });
+                        break 'search None;
+                    }
+                    route_attempts += 1;
                     if let Some((p, len)) = try_route_combination(
                         &indices, &all_candidates, lrps, graph, params, t,
                         &mut route_cache, &mut needs_tile, zoom,

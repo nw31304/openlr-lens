@@ -169,8 +169,9 @@ export default function ResultPanel() {
 
   const hasTrace  = !!decodeResult.trace;
   const isFull    = params.trace_level === 'Full';
-  const debugLabel = !hasTrace  ? 'Re-decode with tracing'
-                   : !isFull    ? 'Re-decode with full trace'
+  const debugLabel = !hasTrace && isFull  ? 'Re-decode'
+                   : !hasTrace           ? 'Re-decode with tracing'
+                   : !isFull             ? 'Re-decode with full trace'
                    : !showTrace ? 'Open trace panel'
                    : null;
   const debugAction = (!hasTrace || !isFull) ? debugDecode : toggleTrace;

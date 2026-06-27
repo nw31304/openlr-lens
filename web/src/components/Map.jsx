@@ -283,6 +283,80 @@ function polylineMid(coords) {
           coords[i][1] + f * (coords[j][1] - coords[i][1])];
 }
 
+function parseLatLon(str) {
+  const m = str.trim().match(/^(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)$/);
+  if (!m) return null;
+  const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
+function applyOffsets(coords, posM, negM) {
+  let pts = [...coords];
+  if (posM > 0) {
+    let remaining = posM;
+    while (pts.length > 2) {
+      const d = haversineM(pts[0][0], pts[0][1], pts[1][0], pts[1][1]);
+      if (remaining <= d) {
+        const t = remaining / d;
+        pts[0] = [pts[0][0] + t * (pts[1][0] - pts[0][0]), pts[0][1] + t * (pts[1][1] - pts[0][1])];
+        break;
+      }
+      remaining -= d;
+      pts.shift();
+    }
+  }
+  if (negM > 0) {
+    let remaining = negM;
+    while (pts.length > 2) {
+      const last = pts.length - 1;
+      const d = haversineM(pts[last-1][0], pts[last-1][1], pts[last][0], pts[last][1]);
+      if (remaining <= d) {
+        const t = remaining / d;
+        pts[last] = [pts[last][0] + t * (pts[last-1][0] - pts[last][0]), pts[last][1] + t * (pts[last-1][1] - pts[last][1])];
+        break;
+      }
+      remaining -= d;
+      pts.pop();
+    }
+  }
+  return pts;
+}
+
+function computeTraversalDirections(segments) {
+  const cache = getSegGeomCache();
+  const n = segments.length;
+  if (n === 0) return [];
+  const dirs = segments.map(s =>
+    s.direction === 'Forward' ? 'Forward' : s.direction === 'Backward' ? 'Reverse' : null
+  );
+  const feats = segments.map(s => cache.get(s.segment_id));
+  if (dirs[0] === null) {
+    const f0 = feats[0], f1 = n > 1 ? feats[1] : null;
+    if (f0 && f1) {
+      const c0 = f0.geometry.coordinates, c1 = f1.geometry.coordinates;
+      const dFF = haversineM(c0[c0.length-1][0], c0[c0.length-1][1], c1[0][0], c1[0][1]);
+      const dFR = haversineM(c0[c0.length-1][0], c0[c0.length-1][1], c1[c1.length-1][0], c1[c1.length-1][1]);
+      const dRF = haversineM(c0[0][0], c0[0][1], c1[0][0], c1[0][1]);
+      const dRR = haversineM(c0[0][0], c0[0][1], c1[c1.length-1][0], c1[c1.length-1][1]);
+      dirs[0] = Math.min(dFF, dFR) <= Math.min(dRF, dRR) ? 'Forward' : 'Reverse';
+    } else {
+      dirs[0] = 'Forward';
+    }
+  }
+  for (let i = 1; i < n; i++) {
+    if (dirs[i] !== null) continue;
+    const fi = feats[i], fi1 = feats[i - 1];
+    if (!fi || !fi1) { dirs[i] = 'Forward'; continue; }
+    const ci = fi.geometry.coordinates, ci1 = fi1.geometry.coordinates;
+    const prevEnd = dirs[i-1] === 'Forward' ? ci1[ci1.length-1] : ci1[0];
+    const dFwd = haversineM(prevEnd[0], prevEnd[1], ci[0][0], ci[0][1]);
+    const dRev = haversineM(prevEnd[0], prevEnd[1], ci[ci.length-1][0], ci[ci.length-1][1]);
+    dirs[i] = dFwd <= dRev ? 'Forward' : 'Reverse';
+  }
+  return dirs;
+}
+
 // Clip a polyline [lon,lat][] to start at the nearest point to (snapLon, snapLat).
 // Returns the tail portion of the polyline from that snap point onward.
 function clipGeomFromPoint(coords, snapLon, snapLat) {
@@ -410,6 +484,7 @@ export default function MapView({ tilesBase, ready }) {
   const routePulseRef   = useRef(null);   // rAF handle for route-found pulse animation
   const candPanelRef        = useRef(null);
   const candidatePopupRef   = useRef(null);
+  const capturePopupRef     = useRef(null);
   const pendingPopupCoordRef    = useRef(null); // geographic coord to project after fitBounds animation
   const pendingCandAnchorCoordRef = useRef(null); // candidate popup snap coord, same deferred scheme
 
@@ -428,6 +503,25 @@ export default function MapView({ tilesBase, ready }) {
   const [measureCursor, setMeasureCursor] = useState(null);
   const measuringRef  = useRef(false);
   const measurePtsRef = useRef([]);
+
+  const [coordCaptureActive, setCoordCaptureActive] = useState(false);
+  const coordCaptureActiveRef = useRef(false);
+  const [cursorCoord, setCursorCoord] = useState(null);
+  const cursorCoordRef = useRef(null);
+  const [coordCopied, setCoordCopied] = useState(false);
+  const [copiedText, setCopiedText] = useState('');
+  const [locPins, setLocPins] = useState([]);
+  const locPinMarkersRef = useRef({});
+  const [showZoomPanel, setShowZoomPanel] = useState(false);
+  const [zoomInput, setZoomInput] = useState('');
+  const [zoomError, setZoomError] = useState(false);
+  const [bearingActive, setBearingActive] = useState(false);
+  const bearingActiveRef = useRef(false);
+  const [bearingPts, setBearingPts] = useState([]);
+  const bearingPtsRef = useRef([]);
+  const [permalinkCopied, setPermalinkCopied] = useState(false);
+  const [exportFlash, setExportFlash] = useState(false);
+  const [toolbarOpen, setToolbarOpen] = useState(false);
 
   const { pos: lrpPos,  onMouseDown: lrpMouseDown,  resetPos: lrpResetPos  } = useDraggable(lrpPanelRef);
   const { pos: segPos,  onMouseDown: segMouseDown,  resetPos: segResetPos  } = useDraggable(segPanelRef);
@@ -451,6 +545,24 @@ export default function MapView({ tilesBase, ready }) {
   const showTrace          = useStore(s => s.showTrace);
   const candidatePopup     = useStore(s => s.candidatePopup);
   const clearCandidatePopup = useStore(s => s.clearCandidatePopup);
+
+  const openlrString    = useStore(s => s.openlrString);
+  const setOpenlrString = useStore(s => s.setOpenlrString);
+  const runDecode       = useStore(s => s.runDecode);
+
+  const permalinkAutoLoaded = useRef(false);
+  useEffect(() => {
+    if (!ready || permalinkAutoLoaded.current) return;
+    const hash = window.location.hash;
+    if (hash.startsWith('#q=')) {
+      const q = decodeURIComponent(hash.slice(3));
+      if (q) {
+        permalinkAutoLoaded.current = true;
+        setOpenlrString(q);
+        runDecode();
+      }
+    }
+  }, [ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset drag position when a new popup target is clicked
   useEffect(() => { lrpResetPos(); }, [lrpInfo]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -528,7 +640,7 @@ export default function MapView({ tilesBase, ready }) {
     clearRequestedInfoSegment();
     const [z, x, y] = tile.split('/').map(Number);
     const segId = getSegmentId(z, x, y, local_index);
-    const feat = segId >= 0 ? getSegGeomCache().get(segId) : null;
+    const feat = getSegGeomCache().get(segId);
     if (!feat) return;
 
     // Set popup content immediately, but defer anchor projection.
@@ -537,7 +649,7 @@ export default function MapView({ tilesBase, ready }) {
     // in pendingPopupCoordRef lets it project AFTER the animation settles.
     setLrpInfo(null);
     setInfoAnchor(null);
-    setInfoProps({ ...feat.properties, segment_id: segId >= 0 ? segId : null });
+    setInfoProps({ ...feat.properties, segment_id: segId });
     setSegDiagnosis(null);
 
     const coords = feat.geometry.coordinates;
@@ -963,8 +1075,11 @@ export default function MapView({ tilesBase, ready }) {
       });
 
       // ── Click handlers ────────────────────────────────────────────────────
-      const pointerOn  = () => { if (!measuringRef.current) map.getCanvas().style.cursor = 'pointer'; };
-      const pointerOff = () => { if (!measuringRef.current) map.getCanvas().style.cursor = ''; };
+      const pointerOn  = () => { if (!measuringRef.current && !bearingActiveRef.current && !coordCaptureActiveRef.current) map.getCanvas().style.cursor = 'pointer'; };
+      const pointerOff = () => {
+        if (coordCaptureActiveRef.current) map.getCanvas().style.cursor = 'crosshair';
+        else if (!measuringRef.current && !bearingActiveRef.current) map.getCanvas().style.cursor = '';
+      };
 
       for (let frc = 0; frc < 8; frc++) {
         map.on('click', `olr-frc${frc}`, onSegmentClick);
@@ -988,6 +1103,8 @@ export default function MapView({ tilesBase, ready }) {
       map.on('mouseleave', 'decoded-path-line', pointerOff);
 
       map.on('click', onMapClick);
+      map.on('mousemove', e => { const c = [e.lngLat.lng, e.lngLat.lat]; setCursorCoord(c); cursorCoordRef.current = c; });
+      map.getCanvas().addEventListener('mouseleave', () => { setCursorCoord(null); cursorCoordRef.current = null; });
 
       loadVisibleTiles(map);
     });
@@ -1119,6 +1236,14 @@ export default function MapView({ tilesBase, ready }) {
   // ── Click interaction ────────────────────────────────────────────────────────
 
   function onNodeClick(e) {
+    if (bearingActiveRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = bearingPtsRef.current.length >= 2 ? [pt] : [...bearingPtsRef.current, pt];
+      bearingPtsRef.current = next;
+      setBearingPts(next);
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (measuringRef.current) {
       const pt = [e.lngLat.lng, e.lngLat.lat];
       const next = [...measurePtsRef.current, pt];
@@ -1138,6 +1263,14 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onSegmentClick(e) {
+    if (bearingActiveRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = bearingPtsRef.current.length >= 2 ? [pt] : [...bearingPtsRef.current, pt];
+      bearingPtsRef.current = next;
+      setBearingPts(next);
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (measuringRef.current) {
       const pt = [e.lngLat.lng, e.lngLat.lat];
       const next = [...measurePtsRef.current, pt];
@@ -1186,6 +1319,14 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onDecodedPathClick(e) {
+    if (bearingActiveRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = bearingPtsRef.current.length >= 2 ? [pt] : [...bearingPtsRef.current, pt];
+      bearingPtsRef.current = next;
+      setBearingPts(next);
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (measuringRef.current) {
       const pt = [e.lngLat.lng, e.lngLat.lat];
       const next = [...measurePtsRef.current, pt];
@@ -1232,6 +1373,14 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onLrpClick(e) {
+    if (bearingActiveRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = bearingPtsRef.current.length >= 2 ? [pt] : [...bearingPtsRef.current, pt];
+      bearingPtsRef.current = next;
+      setBearingPts(next);
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (measuringRef.current) {
       const pt = [e.lngLat.lng, e.lngLat.lat];
       const next = [...measurePtsRef.current, pt];
@@ -1250,6 +1399,18 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onMapClick(e) {
+    if (coordCaptureActiveRef.current) {
+      cursorCoordRef.current = [e.lngLat.lng, e.lngLat.lat];
+      commitCoordCapture();
+      return;
+    }
+    if (bearingActiveRef.current) {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      const next = bearingPtsRef.current.length >= 2 ? [pt] : [...bearingPtsRef.current, pt];
+      bearingPtsRef.current = next;
+      setBearingPts(next);
+      return;
+    }
     if (measuringRef.current) {
       const pt = [e.lngLat.lng, e.lngLat.lat];
       const next = [...measurePtsRef.current, pt];
@@ -1959,12 +2120,19 @@ export default function MapView({ tilesBase, ready }) {
   // Escape cancels measurement.
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape' && measuringRef.current) {
-        measuringRef.current = false;
-        measurePtsRef.current = [];
-        setMeasuring(false);
-        setMeasurePts([]);
-        setMeasureCursor(null);
+      if (e.key === 'Escape') {
+        if (measuringRef.current) {
+          measuringRef.current = false;
+          measurePtsRef.current = [];
+          setMeasuring(false);
+          setMeasurePts([]);
+          setMeasureCursor(null);
+        } else if (bearingActiveRef.current) {
+          bearingActiveRef.current = false;
+          bearingPtsRef.current = [];
+          setBearingActive(false);
+          setBearingPts([]);
+        }
       }
     };
     document.addEventListener('keydown', onKey);
@@ -1987,6 +2155,242 @@ export default function MapView({ tilesBase, ready }) {
     map.getSource('measure-points').setData(pointsData);
   }, [measurePts, measureCursor]);
 
+  // ── Bearing tool ──────────────────────────────────────────────────────────────
+
+  function toggleBearing() {
+    if (bearingActiveRef.current) {
+      bearingActiveRef.current = false;
+      bearingPtsRef.current = [];
+      setBearingActive(false);
+      setBearingPts([]);
+    } else {
+      bearingActiveRef.current = true;
+      bearingPtsRef.current = [];
+      setBearingActive(true);
+      setBearingPts([]);
+    }
+  }
+
+  useEffect(() => {
+    bearingActiveRef.current = bearingActive;
+    const map = mapRef.current;
+    if (!map) return;
+    if (!bearingActive) {
+      if (!measuringRef.current) map.getCanvas().style.cursor = '';
+      return;
+    }
+    map.getCanvas().style.cursor = 'crosshair';
+    return () => {
+      if (!bearingActiveRef.current && !measuringRef.current) map.getCanvas().style.cursor = '';
+    };
+  }, [bearingActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── GeoJSON export ────────────────────────────────────────────────────────────
+
+  function doExportGeoJSON() {
+    if (!decodeResult?.ok) return;
+    const cache = getSegGeomCache();
+    const segments = decodeResult.segments ?? [];
+    const traversalDirs = computeTraversalDirections(segments);
+
+    let allCoords = [];
+    for (let i = 0; i < segments.length; i++) {
+      const feat = cache.get(segments[i].segment_id);
+      if (!feat) continue;
+      let coords = feat.geometry.coordinates;
+      if (traversalDirs[i] === 'Reverse') coords = [...coords].reverse();
+      if (allCoords.length === 0) allCoords.push(...coords);
+      else allCoords.push(...coords.slice(1));
+    }
+
+    const posM = ((decodeResult.pos_offset_lb ?? 0) + (decodeResult.pos_offset_ub ?? 0)) / 2;
+    const negM = ((decodeResult.neg_offset_lb ?? 0) + (decodeResult.neg_offset_ub ?? 0)) / 2;
+    const trimmed = applyOffsets(allCoords, posM, negM);
+
+    let wkt = null;
+    if (decodeResult.location_type === 'PointAlongLine' && decodeResult.point_lon != null) {
+      wkt = `POINT(${decodeResult.point_lon.toFixed(7)} ${decodeResult.point_lat.toFixed(7)})`;
+    } else if (trimmed.length >= 2) {
+      wkt = `LINESTRING(${trimmed.map(([lo, la]) => `${lo.toFixed(7)} ${la.toFixed(7)}`).join(', ')})`;
+    }
+
+    const features = segments.map((seg, i) => {
+      const feat = cache.get(seg.segment_id);
+      let coords = feat?.geometry?.coordinates ?? null;
+      if (coords && traversalDirs[i] === 'Reverse') coords = [...coords].reverse();
+      return {
+        type: 'Feature',
+        properties: {
+          frc:       seg.frc,
+          fow:       seg.fow,
+          direction: traversalDirs[i],
+          length_m:  seg.length_m,
+        },
+        geometry: coords ? { type: 'LineString', coordinates: coords } : null,
+      };
+    });
+
+    const hasPos = (decodeResult.pos_offset_ub ?? 0) > 0;
+    const hasNeg = (decodeResult.neg_offset_ub ?? 0) > 0;
+    const fc = {
+      type: 'FeatureCollection',
+      metadata: {
+        openlr:           openlrString,
+        location_type:    decodeResult.location_type,
+        pos_offset_range: hasPos ? [decodeResult.pos_offset_lb, decodeResult.pos_offset_ub] : null,
+        neg_offset_range: hasNeg ? [decodeResult.neg_offset_lb, decodeResult.neg_offset_ub] : null,
+        ...(decodeResult.location_type === 'PointAlongLine' && decodeResult.point_lon != null
+          ? { point_lat: decodeResult.point_lat, point_lon: decodeResult.point_lon }
+          : {}),
+        wkt,
+      },
+      features,
+    };
+
+    const blob = new Blob([JSON.stringify(fc, null, 2)], { type: 'application/geo+json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'openlr-path.geojson';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setExportFlash(true);
+    setTimeout(() => setExportFlash(false), 1200);
+  }
+
+  function doPermalink() {
+    const url = `${window.location.origin}${window.location.pathname}#q=${encodeURIComponent(openlrString)}`;
+    navigator.clipboard.writeText(url).catch(() => {});
+    setPermalinkCopied(true);
+    setTimeout(() => setPermalinkCopied(false), 1500);
+  }
+
+  function doZoomGo() {
+    const parsed = parseLatLon(zoomInput);
+    if (!parsed) { setZoomError(true); return; }
+    setZoomError(false);
+    const id = `lp-${parsed.lat.toFixed(6)}-${parsed.lon.toFixed(6)}-${performance.now().toFixed(0)}`;
+    setLocPins(prev => [...prev, { id, lat: parsed.lat, lon: parsed.lon }]);
+    mapRef.current?.flyTo({ center: [parsed.lon, parsed.lat], zoom: 16, duration: 800 });
+  }
+
+  function toggleCoordCapture() {
+    const nowActive = !coordCaptureActive;
+    coordCaptureActiveRef.current = nowActive;
+    setCoordCaptureActive(nowActive);
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = nowActive ? 'crosshair' : '';
+    if (!nowActive) {
+      setCursorCoord(null);
+      cursorCoordRef.current = null;
+      if (capturePopupRef.current) { capturePopupRef.current.remove(); capturePopupRef.current = null; }
+    }
+  }
+
+  function commitCoordCapture() {
+    const coord = cursorCoordRef.current;
+    if (!coord) return;
+    const [lon, lat] = coord;
+    const text = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+
+    // Copy immediately
+    navigator.clipboard.writeText(text).catch(() => {});
+    setCopiedText(text);
+    setCoordCopied(true);
+    setTimeout(() => { setCoordCopied(false); setCopiedText(''); }, 1500);
+
+    // Deactivate capture mode
+    coordCaptureActiveRef.current = false;
+    setCoordCaptureActive(false);
+    setCursorCoord(null);
+    cursorCoordRef.current = null;
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = '';
+
+    // Show popup at the captured location offering "Add pin"
+    const map = mapRef.current;
+    if (!map) return;
+    if (capturePopupRef.current) { capturePopupRef.current.remove(); capturePopupRef.current = null; }
+
+    const content = document.createElement('div');
+    content.className = 'loc-pin-popup';
+    content.innerHTML = `<div class="loc-pin-coord">✓ Copied: ${text}</div>
+      <div class="loc-pin-btns"><button class="loc-pin-dismiss capture-addpin-btn">Add pin</button></div>`;
+
+    const popup = new maplibregl.Popup({ closeButton: true, offset: 0, className: 'loc-pin-popup-wrap' })
+      .setLngLat([lon, lat])
+      .setDOMContent(content)
+      .addTo(map);
+
+    capturePopupRef.current = popup;
+    popup.on('close', () => { capturePopupRef.current = null; });
+
+    content.querySelector('.capture-addpin-btn').addEventListener('click', () => {
+      const id = `lp-${lat.toFixed(6)}-${lon.toFixed(6)}-${performance.now().toFixed(0)}`;
+      setLocPins(prev => [...prev, { id, lat, lon }]);
+      popup.remove();
+    });
+  }
+
+  useEffect(() => {
+    if (!coordCaptureActive) return;
+    function onKeyDown(e) {
+      if (e.key === 'Enter') { e.preventDefault(); commitCoordCapture(); }
+      else if (e.key === 'Escape') { toggleCoordCapture(); }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [coordCaptureActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Location pin markers ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Remove markers for pins that were dismissed
+    const currentIds = new Set(locPins.map(p => p.id));
+    Object.keys(locPinMarkersRef.current).forEach(id => {
+      if (!currentIds.has(id)) {
+        locPinMarkersRef.current[id].marker.remove();
+        delete locPinMarkersRef.current[id];
+      }
+    });
+
+    // Add markers for new pins
+    locPins.forEach(pin => {
+      if (locPinMarkersRef.current[pin.id]) return;
+
+      const el = document.createElement('div');
+      el.className = 'loc-pin-marker';
+      el.textContent = '📍';
+
+      const content = document.createElement('div');
+      content.className = 'loc-pin-popup';
+      content.innerHTML = `<div class="loc-pin-coord">${pin.lat.toFixed(6)}, ${pin.lon.toFixed(6)}</div>
+        <div class="loc-pin-btns">
+          <button class="loc-pin-dismiss">Dismiss</button>
+          <button class="loc-pin-dismiss-all">Dismiss all</button>
+        </div>`;
+      content.querySelector('.loc-pin-dismiss').addEventListener('click', () =>
+        setLocPins(prev => prev.filter(p => p.id !== pin.id)));
+      content.querySelector('.loc-pin-dismiss-all').addEventListener('click', () =>
+        setLocPins([]));
+
+      const popup = new maplibregl.Popup({ closeButton: true, offset: 28, className: 'loc-pin-popup-wrap' })
+        .setDOMContent(content);
+
+      const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+        .setLngLat([pin.lon, pin.lat])
+        .setPopup(popup)
+        .addTo(map);
+
+      locPinMarkersRef.current[pin.id] = { marker, popup };
+    });
+  }, [locPins]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
@@ -2001,7 +2405,7 @@ export default function MapView({ tilesBase, ready }) {
         const { style: segStyle, placement: segPl, tipLeft: segTipLeft } = popupPlacement(infoAnchor, 260, mapContainer.current?.offsetWidth, mapContainer.current?.offsetHeight);
         return (
         <div ref={segPanelRef}
-          className={`seg-info-panel${!segPos && segPl ? ` callout-${segPl}` : ''}`}
+          className="seg-info-panel"
           style={segPos ? { position: 'absolute', left: segPos.left, top: segPos.top, right: 'auto', bottom: 'auto' } : segStyle}>
           <header className="seg-info-header" onMouseDown={segMouseDown}>
             <span>
@@ -2081,11 +2485,11 @@ export default function MapView({ tilesBase, ready }) {
       })()}
 
       {/* LRP info panel */}
-      {lrpInfo && (() => {
+      {lrpInfo && infoAnchor && (() => {
         const { style: lrpStyle, placement: lrpPl, tipLeft: lrpTipLeft } = popupPlacement(infoAnchor, 260, mapContainer.current?.offsetWidth, mapContainer.current?.offsetHeight);
         return (
         <div ref={lrpPanelRef}
-          className={`seg-info-panel${!lrpPos && lrpPl ? ` callout-${lrpPl}` : ''}`}
+          className="seg-info-panel"
           style={lrpPos ? { position: 'absolute', left: lrpPos.left, top: lrpPos.top, right: 'auto', bottom: 'auto' } : lrpStyle}>
           <header className="seg-info-header" onMouseDown={lrpMouseDown}>
             <span>LRP {lrpInfo.index + 1}</span>
@@ -2141,7 +2545,7 @@ export default function MapView({ tilesBase, ready }) {
         const { style: nodeStyle, placement: nodePl, tipLeft: nodeTipLeft } = popupPlacement(nodeAnchor, 260, mapContainer.current?.offsetWidth, mapContainer.current?.offsetHeight);
         return (
         <div
-          className={`seg-info-panel${nodePl ? ` callout-${nodePl}` : ''}`}
+          className="seg-info-panel"
           style={nodeStyle}>
           <header className="seg-info-header">
             <span>Node {nodeInfo.local_index}</span>
@@ -2171,7 +2575,7 @@ export default function MapView({ tilesBase, ready }) {
         const { style: candStyle, placement: candPl, tipLeft: candTipLeft } = popupPlacement(candAnchor, 320, mapContainer.current?.offsetWidth, mapContainer.current?.offsetHeight);
         return (
         <div ref={candPanelRef}
-          className={`seg-info-panel cand-panel${!candPos && candPl ? ` callout-${candPl}` : ''}`}
+          className="seg-info-panel cand-panel"
           style={candPos ? { position: 'absolute', left: candPos.left, top: candPos.top, right: 'auto', bottom: 'auto' } : candStyle}>
           <header className="seg-info-header" onMouseDown={candMouseDown}>
             <span>
@@ -2201,14 +2605,74 @@ export default function MapView({ tilesBase, ready }) {
         </div>
       )}
 
-      {/* Measure tool button */}
-      <button
-        className={`measure-btn${measuring ? ' active' : ''}`}
-        onClick={toggleMeasure}
-        title={measuring ? 'Cancel measurement (Esc)' : measurePts.length > 0 ? 'Clear measurement' : 'Measure distance'}
-      >📏</button>
+      {/* ── Map tools toolbar ──────────────────────────────────────────────── */}
 
-      {/* Measure distance panel */}
+      {/* Toggle button — always visible */}
+      <button
+        className={`map-toolbar-toggle${toolbarOpen ? ' active' : ''}`}
+        onClick={() => setToolbarOpen(v => !v)}
+        title={toolbarOpen ? 'Hide tools' : 'Show tools'}
+      >⚙</button>
+
+      {/* Collapsible tool buttons */}
+      <div className={`map-toolbar${toolbarOpen ? ' open' : ''}`}>
+        <button
+          className={`map-tool-btn${coordCaptureActive ? ' coord-capture-active' : ''}`}
+          onClick={toggleCoordCapture}
+          title={coordCaptureActive ? 'Cancel (Esc)' : 'Capture coordinates'}
+        >📍</button>
+        <button
+          className={`map-tool-btn${showZoomPanel ? ' active' : ''}`}
+          onClick={() => { setShowZoomPanel(v => !v); setZoomError(false); }}
+          title="Zoom to coordinates"
+        >🔍</button>
+        <button
+          className={`map-tool-btn${measuring ? ' active' : ''}`}
+          onClick={toggleMeasure}
+          title={measuring ? 'Cancel measurement (Esc)' : measurePts.length > 0 ? 'Clear measurement' : 'Measure distance'}
+        >📏</button>
+        <button
+          className={`map-tool-btn${bearingActive ? ' active' : ''}`}
+          onClick={toggleBearing}
+          title={bearingActive ? 'Cancel bearing tool (Esc)' : 'Measure bearing and distance between two points'}
+        >🧭</button>
+        <button
+          className={`map-tool-btn${exportFlash ? ' flash' : ''}${!decodeResult?.ok ? ' disabled' : ''}`}
+          onClick={doExportGeoJSON}
+          disabled={!decodeResult?.ok}
+          title={decodeResult?.ok ? 'Export decoded path as GeoJSON' : 'Decode a location first'}
+        >⬇</button>
+        <button
+          className={`map-tool-btn${permalinkCopied ? ' flash' : ''}`}
+          onClick={doPermalink}
+          title="Copy permalink to clipboard"
+        >🔗</button>
+      </div>
+
+      {/* Tool panels — outside toolbar so they stay visible when toolbar collapses */}
+      {coordCaptureActive && cursorCoord && (
+        <div className="coord-display" title="Click map or press Enter to copy">
+          {cursorCoord[1].toFixed(5)}, {cursorCoord[0].toFixed(5)}
+        </div>
+      )}
+      {coordCopied && copiedText && (
+        <div className="coord-display copied">✓ {copiedText}</div>
+      )}
+
+      {showZoomPanel && (
+        <div className="zoomloc-panel">
+          <input
+            className={`zoomloc-input${zoomError ? ' error' : ''}`}
+            placeholder="lat, lon"
+            value={zoomInput}
+            onChange={e => { setZoomInput(e.target.value); setZoomError(false); }}
+            onKeyDown={e => e.key === 'Enter' && doZoomGo()}
+            autoFocus
+          />
+          <button className="zoomloc-go" onClick={doZoomGo}>Go</button>
+        </div>
+      )}
+
       {(measuring || measurePts.length > 0) && (() => {
         const total = measurePts.reduce((sum, pt, i) =>
           i === 0 ? 0 : sum + haversineM(measurePts[i-1][0], measurePts[i-1][1], pt[0], pt[1]), 0);
@@ -2229,6 +2693,27 @@ export default function MapView({ tilesBase, ready }) {
             {measuring && measurePts.length >= 1 && (
               <span className="measure-hint"> · dbl-click to finish</span>
             )}
+          </div>
+        );
+      })()}
+
+      {(bearingActive || bearingPts.length > 0) && (() => {
+        const result = bearingPts.length === 2 ? (() => {
+          const [p1, p2] = bearingPts;
+          const dist = haversineM(p1[0], p1[1], p2[0], p2[1]);
+          const bear = compassBearing(p1[0], p1[1], p2[0], p2[1]);
+          return { dist, bear };
+        })() : null;
+        return (
+          <div className="bearing-panel">
+            {bearingPts.length === 0 && <span className="measure-hint">Click to set start point</span>}
+            {bearingPts.length === 1 && <span className="measure-hint">Click to set end point</span>}
+            {result && <>
+              <span className="measure-total">{result.bear.toFixed(1)}°</span>
+              <span className="bearing-sep"> · </span>
+              <span className="measure-total">{fmtDist(result.dist)}</span>
+              {bearingActive && <span className="measure-hint"> · click to remeasure</span>}
+            </>}
           </div>
         );
       })()}

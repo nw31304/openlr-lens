@@ -1003,8 +1003,7 @@ html, body, #root, .app {
   background: rgba(20, 20, 36, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 6px;
-  /* drop-shadow (not box-shadow) so the filter is applied to the entire
-     rendered shape, including the ::before/::after callout arrow triangles. */
+  /* drop-shadow (not box-shadow) so the filter covers the inline SVG tip arrow too. */
   filter: drop-shadow(0 3px 10px rgba(0, 0, 0, 0.65));
   font-size: 13px;
   color: #e8e8f0;
@@ -1144,13 +1143,15 @@ html, body, #root, .app {
   flex-shrink: 0;
 }
 
-/* ── Measure tool ───────────────────────────────────────────────────────────── */
+/* ── Shared map tool button style ────────────────────────────────────────────── */
 
-.measure-btn {
+/* ── Map toolbar toggle ──────────────────────────────────────────────────────── */
+
+.map-toolbar-toggle {
   position: absolute;
-  bottom: 68px;
   right: 8px;
-  z-index: 8;
+  bottom: 68px;
+  z-index: 9;
   width: 30px;
   height: 30px;
   background: rgba(10, 10, 20, 0.82);
@@ -1168,15 +1169,84 @@ html, body, #root, .app {
   transition: border-color 0.15s, background 0.15s;
 }
 
-.measure-btn:hover {
+.map-toolbar-toggle:hover {
   border-color: rgba(255, 255, 255, 0.4);
   background: rgba(30, 30, 50, 0.9);
 }
 
-.measure-btn.active {
+.map-toolbar-toggle.active {
   border-color: #00d4ff;
   background: rgba(0, 100, 130, 0.5);
 }
+
+/* ── Map toolbar (collapsible) ───────────────────────────────────────────────── */
+
+.map-toolbar {
+  position: absolute;
+  right: 8px;
+  bottom: 106px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: max-height 0.22s ease, opacity 0.18s ease, transform 0.18s ease;
+}
+
+.map-toolbar.open {
+  max-height: 280px;
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* ── Individual tool buttons ─────────────────────────────────────────────────── */
+
+.map-tool-btn {
+  width: 30px;
+  height: 30px;
+  background: rgba(10, 10, 20, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #e8e8f0;
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.map-tool-btn:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(30, 30, 50, 0.9);
+}
+
+.map-tool-btn.active {
+  border-color: #00d4ff;
+  background: rgba(0, 100, 130, 0.5);
+}
+
+.map-tool-btn.flash {
+  border-color: #00ff99;
+  background: rgba(0, 120, 70, 0.5);
+}
+
+.map-tool-btn.disabled,
+.map-tool-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Measure tool ───────────────────────────────────────────────────────────── */
 
 .measure-panel {
   position: absolute;
@@ -1212,6 +1282,190 @@ html, body, #root, .app {
 .measure-hint {
   color: rgba(200, 200, 220, 0.65);
   font-style: italic;
+}
+
+/* ── Coord display ────────────────────────────────────────────────────────────── */
+
+.coord-display {
+  position: absolute;
+  bottom: 68px;
+  right: 46px;
+  z-index: 8;
+  background: rgba(10, 10, 20, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #e8e8f0;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  padding: 4px 10px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s, color 0.15s;
+  line-height: 22px;
+}
+
+.coord-display:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.coord-display.copied {
+  border-color: #00ff99;
+  color: #00ff99;
+}
+
+.coord-capture-active {
+  border-color: #00ff99 !important;
+  color: #00ff99 !important;
+}
+
+/* ── Zoom-to-location panel ──────────────────────────────────────────────────── */
+
+.zoomloc-panel {
+  position: absolute;
+  bottom: 68px;
+  right: 46px;
+  z-index: 8;
+  background: rgba(10, 10, 20, 0.88);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  padding: 5px 7px;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.zoomloc-input {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: #e8e8f0;
+  font-size: 12px;
+  padding: 3px 7px;
+  width: 150px;
+  outline: none;
+  font-family: 'Courier New', monospace;
+}
+
+.zoomloc-input::placeholder {
+  color: rgba(180, 180, 200, 0.5);
+  font-family: inherit;
+}
+
+.zoomloc-input:focus {
+  border-color: rgba(100, 200, 255, 0.5);
+}
+
+.zoomloc-input.error {
+  border-color: rgba(255, 100, 100, 0.7);
+}
+
+.zoomloc-go {
+  background: rgba(0, 100, 160, 0.7);
+  border: 1px solid rgba(100, 180, 255, 0.35);
+  border-radius: 4px;
+  color: #e8e8f0;
+  font-size: 12px;
+  padding: 3px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.zoomloc-go:hover {
+  background: rgba(0, 130, 200, 0.85);
+}
+
+/* ── Location pins ────────────────────────────────────────────────────────────── */
+
+.loc-pin-marker {
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.6));
+}
+
+.loc-pin-popup-wrap .maplibregl-popup-content {
+  background: rgba(10, 10, 20, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 7px;
+  padding: 10px 12px 8px;
+  color: #e8e8f0;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+
+.loc-pin-popup-wrap .maplibregl-popup-tip {
+  border-top-color: rgba(10, 10, 20, 0.92);
+}
+
+.loc-pin-popup-wrap .maplibregl-popup-close-button {
+  color: rgba(200, 200, 220, 0.6);
+  font-size: 16px;
+  right: 6px;
+  top: 4px;
+}
+
+.loc-pin-popup-wrap .maplibregl-popup-close-button:hover {
+  color: #fff;
+  background: none;
+}
+
+.loc-pin-coord {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  margin-bottom: 8px;
+  white-space: nowrap;
+  color: #c8d8ff;
+}
+
+.loc-pin-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.loc-pin-btns button {
+  flex: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.08);
+  color: #e8e8f0;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.loc-pin-btns button:hover {
+  background: rgba(255,255,255,0.18);
+}
+
+/* ── Bearing panel ────────────────────────────────────────────────────────────── */
+
+.bearing-panel {
+  position: absolute;
+  bottom: 68px;
+  right: 46px;
+  z-index: 8;
+  background: rgba(10, 10, 20, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #e8e8f0;
+  font-size: 12px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.bearing-sep {
+  color: rgba(200, 200, 220, 0.5);
 }
 
 /* ── Basemap selector ───────────────────────────────────────────────────────── */
@@ -1713,6 +1967,145 @@ html, body, #root, .app {
   color: #fff;
   background: rgba(255, 255, 255, 0.1);
 }
+
+/* ── Presets bar ─────────────────────────────────────────────────────────────── */
+
+.presets-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.presets-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.presets-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.3);
+  min-width: 44px;
+}
+
+.preset-btn {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.preset-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.presets-row-saved { margin-top: 1px; }
+
+.preset-saved-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid rgba(99, 179, 237, 0.3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.preset-btn-saved {
+  border: none;
+  border-radius: 0;
+  background: rgba(99, 179, 237, 0.1);
+  color: rgba(99, 179, 237, 0.9);
+  padding: 3px 8px;
+}
+.preset-btn-saved:hover {
+  background: rgba(99, 179, 237, 0.2);
+  color: #63b3ed;
+}
+
+.preset-chip-delete {
+  background: none;
+  border: none;
+  border-left: 1px solid rgba(99, 179, 237, 0.2);
+  color: rgba(99, 179, 237, 0.4);
+  font-size: 9px;
+  padding: 3px 5px;
+  cursor: pointer;
+  line-height: 1;
+}
+.preset-chip-delete:hover {
+  color: #fc8181;
+  background: rgba(252, 129, 129, 0.1);
+}
+
+.preset-save-link {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  margin-top: 2px;
+}
+.preset-save-link:hover { color: rgba(255, 255, 255, 0.6); }
+
+.preset-save-row {
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.preset-save-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+  padding: 3px 8px;
+  outline: none;
+  min-width: 0;
+}
+.preset-save-input:focus {
+  border-color: rgba(99, 179, 237, 0.5);
+}
+
+.preset-save-confirm {
+  background: rgba(99, 179, 237, 0.15);
+  border: 1px solid rgba(99, 179, 237, 0.35);
+  color: #63b3ed;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.preset-save-confirm:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.preset-save-confirm:not(:disabled):hover {
+  background: rgba(99, 179, 237, 0.25);
+}
+
+.preset-save-cancel {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 3px 4px;
+}
+.preset-save-cancel:hover { color: rgba(255, 255, 255, 0.6); }
 
 .params-grid {
   display: grid;

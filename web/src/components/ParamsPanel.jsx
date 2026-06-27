@@ -80,6 +80,11 @@ const PARAM_DOCS = {
     increase: 'More search effort; recovers difficult long legs or poorly-connected areas. Proportionally slower.',
     decrease: 'Fail faster on hard legs. Useful in batch mode where speed matters more than recall, or to surface graph connectivity issues quickly.',
   },
+  max_routing_attempts: {
+    what: 'Cap on the total number of candidate-combination trials across all legs. For N LRPs each with K candidates the full search space is Kᴺ⁻¹ combinations (tried in ascending score order). 0 = unlimited. When the cap fires, a RouteAttemptsExhausted event is emitted in the trace.',
+    increase: 'Explores more combinations; recovers cases where the correct route only surfaces deeper in the ranked list. Proportionally slower on large references.',
+    decrease: 'Stops earlier; faster but may miss the correct path when the best-scoring candidate pair is unroutable and the answer lies further down the list. Raise it if you see RouteAttemptsExhausted in the trace.',
+  },
   lfrcnp_tolerance: {
     what: 'Relaxes the Lowest FRC to Next Point (LFRCNP) floor by this many FRC steps. Normally A* cannot traverse segments with FRC > LFRCNP. Each step of tolerance permits one additional road class — e.g. tolerance 1 allows LFRCNP+1 roads (slip roads, service connectors) on the route.',
     increase: 'The most common fix for A* failures where edges_skipped_frc in the trace is high. Allows lower-importance connector roads (ramps, service links) that were present in the encoding map to be used in routing. Risk: the route may use lower-class roads the encoder did not intend.',
@@ -105,6 +110,7 @@ const SCALAR_FIELDS = [
   { key: 'dnp_tolerance_pct',            label: 'DNP tolerance',           unit: '',      step: 0.05,  min: 0,     max: 1      },
   { key: 'max_path_search_factor',       label: 'Path search factor',      unit: '×DNP',  step: 0.5,   min: 1,     max: 20     },
   { key: 'max_astar_expansions',         label: 'A* expansion cap',        unit: '',      step: 10000, min: 0,     max: 500000, int: true },
+  { key: 'max_routing_attempts',         label: 'Routing attempt cap',     unit: '',      step: 1,     min: 0,     max: 500,    int: true },
   { key: 'lfrcnp_tolerance',             label: 'LFRCNP tolerance',        unit: 'steps', step: 1,     min: 0,     max: 7,     int: true },
 ];
 
@@ -274,10 +280,15 @@ function PenaltyTable({ tableKey, rowLabels, colLabels }) {
 // ── ParamsPanel ───────────────────────────────────────────────────────────────
 
 export default function ParamsPanel() {
-  const { params, showParams, setParam, toggleParams } = useStore();
+  const {
+    params, showParams, setParam, toggleParams,
+    loadPreset, saveParamSet, deleteParamSet, loadParamSet, savedParamSets,
+  } = useStore();
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [activeDoc, setActiveDoc] = useState(null);
   const [docPos, setDocPos] = useState({ top: 0, left: 0 });
+  const [saving, setSaving] = useState(false);
+  const [saveName, setSaveName] = useState('');
 
   if (!showParams) return null;
 
@@ -302,6 +313,59 @@ export default function ParamsPanel() {
         <button className="params-panel-close" onClick={toggleParams} title="Close">✕</button>
       </div>
       <div className="params-panel-body">
+
+        {/* ── Presets bar ── */}
+        <div className="presets-bar">
+          <div className="presets-row">
+            <span className="presets-label">Presets</span>
+            {['Permissive', 'Default', 'Strict'].map(name => (
+              <button key={name} className="preset-btn" onClick={() => loadPreset(name)}>{name}</button>
+            ))}
+          </div>
+
+          {Object.keys(savedParamSets).length > 0 && (
+            <div className="presets-row presets-row-saved">
+              <span className="presets-label">Saved</span>
+              {Object.keys(savedParamSets).map(name => (
+                <span key={name} className="preset-saved-chip">
+                  <button className="preset-btn preset-btn-saved" onClick={() => loadParamSet(name)}>{name}</button>
+                  <button className="preset-chip-delete" onClick={() => deleteParamSet(name)} title={`Delete "${name}"`}>✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {saving ? (
+            <div className="presets-row preset-save-row">
+              <input
+                className="preset-save-input"
+                autoFocus
+                placeholder="Name…"
+                value={saveName}
+                onChange={e => setSaveName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && saveName.trim()) {
+                    saveParamSet(saveName.trim(), params);
+                    setSaving(false); setSaveName('');
+                  }
+                  if (e.key === 'Escape') { setSaving(false); setSaveName(''); }
+                }}
+              />
+              <button
+                className="preset-save-confirm"
+                disabled={!saveName.trim()}
+                onClick={() => {
+                  saveParamSet(saveName.trim(), params);
+                  setSaving(false); setSaveName('');
+                }}
+              >Save</button>
+              <button className="preset-save-cancel" onClick={() => { setSaving(false); setSaveName(''); }}>Cancel</button>
+            </div>
+          ) : (
+            <button className="preset-save-link" onClick={() => setSaving(true)}>+ Save current as…</button>
+          )}
+        </div>
+
         <div className="params-grid">
           {SCALAR_FIELDS.map(({ key, label, unit, step, min, max, int: isInt }) => (
             <label key={key} className="param-row">

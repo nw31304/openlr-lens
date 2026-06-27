@@ -634,7 +634,9 @@ export default function TracePanel() {
         )}
         {decodeResult && !trace && (
           <div className="tp-empty-state">
-            Trace level is Off — set to Summary or Full and decode again for routing detail.
+            {traceLevel === 'Off'
+              ? 'Trace level is Off — set to Summary or Full and decode again for routing detail.'
+              : 'No trace data in last decode — decode again to capture routing detail.'}
           </div>
         )}
         {trace && (

@@ -28,6 +28,14 @@
 
 use wasm_bindgen::prelude::*;
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn warn(s: &str);
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
 use openlr_codec::{decode_v3_base64, decode_tpeg_hex, decode_tpeg_base64};
 use openlr_codec::lrp::{LocationReference, LocationType, Orientation, SideOfRoad};
 use openlr_engine::{decode as engine_decode, DecodeError, DecodeParams, Preset, prefetch_tile_keys, path_to_wkt, path_band_wkt};
@@ -304,13 +312,44 @@ impl Decoder {
                         needs_tile: [tk.z as u32, tk.x, tk.y],
                     }).unwrap();
                 }
-                let trace_value = failure.trace.and_then(|t| serde_json::to_value(t).ok());
-                return serde_json::to_string(&DecodeResult {
+                let error_str = failure.error.to_string();
+                let trace_value = failure.trace.and_then(|t| {
+                    // Fast path: serialise the whole trace at once.
+                    if let Ok(val) = serde_json::to_value(&t) {
+                        return Some(val);
+                    }
+                    // Slow path: NaN/Inf in some event field.  Serialise events one by one,
+                    // dropping the offending ones.  Params are always finite, so they succeed.
+                    warn("openlrlens: trace has non-finite floats; retrying per-event");
+                    let n_total = t.events.len();
+                    let events: Vec<serde_json::Value> = t.events.iter()
+                        .filter_map(|ev| serde_json::to_value(ev).ok())
+                        .collect();
+                    let skipped = n_total - events.len();
+                    if skipped > 0 {
+                        warn(&format!("openlrlens: dropped {skipped} trace events with non-finite floats"));
+                    }
+                    let params_val = serde_json::to_value(&t.params)
+                        .unwrap_or(serde_json::Value::Null);
+                    serde_json::to_value(serde_json::json!({
+                        "events": events,
+                        "params": params_val,
+                    })).ok()
+                });
+                let full_result = DecodeResult {
                     lrps: lrp_info_vec(&loc_ref.lrps, &[], &[], &[]),
                     format: self.openlr_format.to_string(),
                     trace: trace_value,
-                    ..DecodeResult::err(failure.error.to_string())
-                }).unwrap();
+                    ..DecodeResult::err(&error_str)
+                };
+                return match serde_json::to_string(&full_result) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // LrpInfo contained a non-finite f64 — drop lrps/trace rather than panic.
+                        warn(&format!("openlrlens: failure result serialisation failed ({e}); dropping lrps"));
+                        serde_json::to_string(&DecodeResult::err(&error_str)).unwrap()
+                    }
+                };
             }
             Ok(r) => r,
         };

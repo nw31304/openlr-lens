@@ -67,6 +67,7 @@ export const PRESETS = {
     max_path_search_factor:         4.0,
     max_astar_expansions:       50000,
     lfrcnp_tolerance:               2,
+    max_routing_attempts:           0,
     trace_level: 'Summary',
   },
   Default: {
@@ -88,6 +89,7 @@ export const PRESETS = {
     max_path_search_factor:         5.0,
     max_astar_expansions:      100000,
     lfrcnp_tolerance:               2,
+    max_routing_attempts:          10,
     trace_level: 'Summary',
   },
   Strict: {
@@ -109,6 +111,7 @@ export const PRESETS = {
     max_path_search_factor:         3.0,
     max_astar_expansions:           0,
     lfrcnp_tolerance:               0,
+    max_routing_attempts:           5,
     trace_level: 'Summary',
   },
 };
@@ -130,6 +133,7 @@ export const useStore = create(persist(
   showSegmentLayer: false,
   decoding: false,
   decodeResult: null,
+  savedParamSets: {},      // { [name: string]: DecodeParams }
   highlightedSegment: null,
   traceHighlightSegIds: null,
   traceLrpFocus: null,
@@ -143,6 +147,20 @@ export const useStore = create(persist(
   setTileUrl: (url) => set({ tileUrl: url }),
 
   resetToDefaults: () => set({ params: { ...PRESETS.Default } }),
+
+  loadPreset: (name) => set({ params: { ...PRESETS[name] } }),
+
+  saveParamSet: (name, params) => set(state => ({
+    savedParamSets: { ...state.savedParamSets, [name]: { ...params } },
+  })),
+  deleteParamSet: (name) => set(state => {
+    const next = { ...state.savedParamSets };
+    delete next[name];
+    return { savedParamSets: next };
+  }),
+  loadParamSet: (name) => set(state => ({
+    params: { ...state.savedParamSets[name] },
+  })),
 
   setParam: (key, value) => set(state => ({
     params: { ...state.params, [key]: value },
@@ -227,6 +245,8 @@ export const useStore = create(persist(
     _tileGeomCache = new Map();
     _segIdToTile   = new Map();
     _segGeomCache  = new Map();
+    // Hoisted so the catch block can inspect it even if an exception occurs mid-processing.
+    let result = null;
     try {
       const t0 = performance.now();
       _decoder.reset_tiles();
@@ -273,12 +293,19 @@ export const useStore = create(persist(
       // Each call either returns a result (ok or error) or a { needs_tile: [z,x,y] }
       // signal.  We cap retries to prevent runaway in degenerate cases.
       const attemptedTiles = new Set(startResult.tiles.map(([z,x,y]) => `${z}/${x}/${y}`));
-      let result;
       const MAX_DYNAMIC_LOADS = 20;
       for (let attempt = 0; attempt <= MAX_DYNAMIC_LOADS; attempt++) {
         const tDecode0 = performance.now();
         result = JSON.parse(_decoder.decode());
         console.log(`[timing] decode() attempt ${attempt}: ${(performance.now()-tDecode0).toFixed(1)} ms`);
+        if (!result.needs_tile) {
+          console.log(
+            `[decode-result] ok=${result.ok} format="${result.format ?? '(absent)'}"` +
+            ` lrps=${result.lrps == null ? 'ABSENT' : result.lrps.length}` +
+            ` trace=${result.trace == null ? 'ABSENT' : ('events=' + (result.trace.events?.length ?? '?'))}` +
+            ` error="${result.error ?? ''}"`
+          );
+        }
 
         if (!result.needs_tile) break;
 
@@ -388,7 +415,18 @@ export const useStore = create(persist(
         replayStep:   0,
       });
     } catch (e) {
-      set({ decoding: false, decodeResult: { ok: false, error: e.message, segments: [] } });
+      const stage = result !== null ? 'post-decode JS' : 'pre-decode (start/tile-load)';
+      console.error(`[decode] exception in runDecode at ${stage}:`, e);
+      console.error('[decode] result at throw time:', result);
+      // result.ok is a boolean iff WASM returned a proper DecodeResult.  Preserve it — it
+      // carries lrps/trace we want to show.  The exception came from post-decode JS processing.
+      if (result !== null && (result.ok === true || result.ok === false)) {
+        set({ decoding: false, decodeResult: result, showResult: true, replaySteps: [], replayStats: null, replayStep: 0 });
+      } else {
+        // WASM throws plain strings via JsValue::from_str; JS Error objects have .message.
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        set({ decoding: false, showResult: true, decodeResult: { ok: false, error: errorMsg, segments: [] } });
+      }
     }
   },
  }),
@@ -398,6 +436,7 @@ export const useStore = create(persist(
      openlrString: state.openlrString,
      tileUrl: state.tileUrl,
      params: state.params,
+     savedParamSets: state.savedParamSets,
    }),
    // Deep-merge params so new fields added to PRESETS.Default survive across
    // localStorage upgrades — persisted values win, but missing fields fall back
@@ -406,6 +445,7 @@ export const useStore = create(persist(
      ...current,
      ...persisted,
      params: { ...current.params, ...persisted.params },
+     savedParamSets: { ...(persisted.savedParamSets ?? {}) },
    }),
  }
 ));

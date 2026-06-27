@@ -231,6 +231,14 @@ pub enum DecodeEvent {
         leg: usize,
         reason: RoutingFailure,
     },
+    /// Emitted when the global routing-attempt cap is hit before any combination
+    /// succeeds.  The decoder stops here rather than exhausting the full Kᴺ space.
+    RouteAttemptsExhausted {
+        /// The cap value from `DecodeParams::max_routing_attempts`.
+        limit: usize,
+        /// How many combinations were actually tried before the cap fired.
+        attempted: usize,
+    },
 
     // ── Validation & offsets ─────────────────────────────────────────────────
     DnpChecked {
