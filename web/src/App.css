@@ -25,8 +25,8 @@ html, body, #root, .app {
   align-items: center;
   gap: 4px;
   padding: 0 10px;
-  background: #141420;
-  border-bottom: 1px solid #252535;
+  background: #282830;
+  border-bottom: 1px solid #3a3a5c;
   z-index: 50;
   white-space: nowrap;
   overflow: visible;
@@ -196,8 +196,8 @@ html, body, #root, .app {
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  background: #141420;
-  border-top: 1px solid #252535;
+  background: #282830;
+  border-top: 1px solid #3a3a5c;
 }
 .bottom-input { font-size: 13px; }
 

@@ -435,11 +435,11 @@ export const useStore = create(persist(
     const { openlrString, params } = get();
     if (!openlrString.trim() || !_pmtiles || !_decoder) return;
 
-    set({
+    set(state => ({
       decoding: true,
       decodeResult: null,
-      // Close all panels and reset transient UI state for the new decode
-      showResult: false,
+      // Reset transient UI state for the new decode; preserve showResult so an
+      // open panel stays open rather than collapsing and re-expanding (flicker).
       showTrace: false,
       showReplay: false,
       showSegmentLayer: false,
@@ -456,7 +456,7 @@ export const useStore = create(persist(
       llmMessages: [],
       llmApiHistory: [],
       llmLoading: false,
-    });
+    }));
     _tileGeomCache = new Map();
     _segIdToTile   = new Map();
     _segGeomCache  = new Map();
