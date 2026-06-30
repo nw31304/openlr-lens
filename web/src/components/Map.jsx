@@ -482,6 +482,7 @@ export default function MapView({ tilesBase, ready }) {
   const replayStepsKey  = useRef(null);   // identity check for replaySteps array
   const flashAnimRef    = useRef(null);   // rAF handle for sonar-ping fade animation
   const routePulseRef   = useRef(null);   // rAF handle for route-found pulse animation
+  const decodePulseRef  = useRef(null);   // rAF handle for post-decode green→cyan fade animation
   const candPanelRef        = useRef(null);
   const candidatePopupRef   = useRef(null);
   const capturePopupRef     = useRef(null);
@@ -1787,6 +1788,10 @@ export default function MapView({ tilesBase, ready }) {
       cancelAnimationFrame(routePulseRef.current);
       routePulseRef.current = null;
     }
+    if (decodePulseRef.current) {
+      cancelAnimationFrame(decodePulseRef.current);
+      decodePulseRef.current = null;
+    }
 
     const emptyFC = { type: 'FeatureCollection', features: [] };
     const replaySources = ['replay-radius', 'replay-route', 'replay-candidates', 'replay-cloud', 'replay-frontier', 'replay-leg', 'replay-flash'];
@@ -1849,9 +1854,21 @@ export default function MapView({ tilesBase, ready }) {
     // Route geometry — prefer clipping the decoded-path WKT (available on successful decodes);
     // fall back to assembling from routeSegIds (works for failed decodes where a leg succeeded
     // but the overall decode did not, so wkt is null).
+    const currentStep = replaySteps[replayStep];
     const { routeFromSnap, routeToSnap, routeSegIds } = visualState;
     let routeFeats = [];
-    if (routeFromSnap && routeToSnap) {
+
+    // For offset-trim and decode-complete steps, bypass per-leg clipping and show
+    // the full decoded path so the animation operates on the entire location.
+    const showFullWkt = currentStep?.type === 'offset_applied' ||
+      (currentStep?.type === 'decode_complete' && currentStep.outcome?.Success);
+    if (showFullWkt) {
+      const wktCoords = parseWktLinestring(decodeResultRef.current?.wkt);
+      if (wktCoords?.length >= 2)
+        routeFeats = [{ type: 'Feature', geometry: { type: 'LineString', coordinates: wktCoords }, properties: {} }];
+    }
+
+    if (routeFeats.length === 0 && routeFromSnap && routeToSnap) {
       const wktCoords = parseWktLinestring(decodeResultRef.current?.wkt);
       if (wktCoords?.length >= 2) {
         const seg1 = clipGeomFromPoint(wktCoords,  routeFromSnap[0], routeFromSnap[1]);
@@ -1879,6 +1896,18 @@ export default function MapView({ tilesBase, ready }) {
     }
     map.getSource('replay-route')?.setData({ type: 'FeatureCollection', features: routeFeats });
 
+    // Reset route line to default green so a prior failure step doesn't leave the colour red.
+    if (map.getLayer('replay-route-line')) {
+      try {
+        map.setPaintProperty('replay-route-line',   'line-color',   '#16a34a');
+        map.setPaintProperty('replay-route-line',   'line-width',    6);
+        map.setPaintProperty('replay-route-line',   'line-opacity',  0.95);
+        map.setPaintProperty('replay-route-casing', 'line-color',   '#0f172a');
+        map.setPaintProperty('replay-route-casing', 'line-width',   10);
+        map.setPaintProperty('replay-route-casing', 'line-opacity',  0.75);
+      } catch (_) {}
+    }
+
     // ── Frontier pulse animation ────────────────────────────────────────────
     if (gj.frontierFC.features.length > 0 && map.getLayer('replay-frontier-circle')) {
       const t0 = performance.now();
@@ -1895,8 +1924,6 @@ export default function MapView({ tilesBase, ready }) {
     }
 
     // ── Auto-pan ────────────────────────────────────────────────────────────
-    const currentStep = replaySteps[replayStep];
-
     if (currentStep?.type === 'search_started') {
       map.flyTo({
         center:   [currentStep.coord[0], currentStep.coord[1]],
@@ -1978,6 +2005,115 @@ export default function MapView({ tilesBase, ready }) {
         else routePulseRef.current = null;
       };
       routePulseRef.current = requestAnimationFrame(animRoute);
+    }
+
+    // offset_applied: fly to the trimmed endpoint so the user sees where the trim was applied.
+    if (currentStep?.type === 'offset_applied' && routeFeats.length > 0) {
+      const allCoords = routeFeats.flatMap(f =>
+        f.geometry.type === 'LineString' ? f.geometry.coordinates : f.geometry.coordinates.flat()
+      );
+      if (allCoords.length >= 2) {
+        const trimCoord = currentStep.is_positive ? allCoords[0] : allCoords[allCoords.length - 1];
+        map.flyTo({ center: trimCoord, zoom: Math.max(map.getZoom(), 15), duration: 500 });
+      }
+    }
+
+    // decode_complete (Success): zoom to full extent and pulse the whole location.
+    if (currentStep?.type === 'decode_complete' && currentStep.outcome?.Success && routeFeats.length > 0) {
+      const allCoords = routeFeats.flatMap(f =>
+        f.geometry.type === 'LineString' ? f.geometry.coordinates : f.geometry.coordinates.flat()
+      );
+      if (allCoords.length >= 2) {
+        let mnLon = Infinity, mnLat = Infinity, mxLon = -Infinity, mxLat = -Infinity;
+        for (const [lo, la] of allCoords) {
+          if (lo < mnLon) mnLon = lo; if (lo > mxLon) mxLon = lo;
+          if (la < mnLat) mnLat = la; if (la > mxLat) mxLat = la;
+        }
+        if (isFinite(mnLon))
+          map.fitBounds([[mnLon, mnLat], [mxLon, mxLat]], { padding: 80, maxZoom: 17, duration: 600 });
+      }
+      if (routePulseRef.current) cancelAnimationFrame(routePulseRef.current);
+      const dp0 = performance.now();
+      const ROUTE_PULSE_MS = 1500;
+      const animDone = (now) => {
+        if (!map.getLayer('replay-route-line')) return;
+        const elapsed = now - dp0;
+        const done    = elapsed >= ROUTE_PULSE_MS;
+        const swell   = Math.abs(Math.sin((elapsed / 500) * Math.PI));
+        try {
+          map.setPaintProperty('replay-route-line',   'line-width',   done ? 6  : 5  + 4 * swell);
+          map.setPaintProperty('replay-route-line',   'line-opacity', done ? 0.95 : 0.7 + 0.3 * swell);
+          map.setPaintProperty('replay-route-casing', 'line-width',   done ? 10 : 9  + 4 * swell);
+          map.setPaintProperty('replay-route-casing', 'line-opacity', done ? 0.75 : 0.5 + 0.3 * swell);
+        } catch (_) { return; }
+        if (!done) routePulseRef.current = requestAnimationFrame(animDone);
+        else routePulseRef.current = null;
+      };
+      routePulseRef.current = requestAnimationFrame(animDone);
+    }
+
+    // decode_complete (Failure): pan to the troublesome area and pulse red.
+    if (currentStep?.type === 'decode_complete' && !currentStep.outcome?.Success) {
+      // Find the last routing leg's snap coordinates by scanning backward.
+      let failBounds = null;
+      for (let i = replayStep - 1; i >= 0; i--) {
+        const s = replaySteps[i];
+        if (s.type === 'route_search_started') {
+          const from = s.from?.projection?.point;
+          const to   = s.to?.projection?.point;
+          if (from && to) {
+            failBounds = [[
+              Math.min(from[0], to[0]) - 0.001,
+              Math.min(from[1], to[1]) - 0.001,
+            ], [
+              Math.max(from[0], to[0]) + 0.001,
+              Math.max(from[1], to[1]) + 0.001,
+            ]];
+            break;
+          }
+        }
+      }
+      if (routeFeats.length > 0) {
+        const allCoords = routeFeats.flatMap(f =>
+          f.geometry.type === 'LineString' ? f.geometry.coordinates : f.geometry.coordinates.flat()
+        );
+        if (allCoords.length >= 2) {
+          let mnLon = Infinity, mnLat = Infinity, mxLon = -Infinity, mxLat = -Infinity;
+          for (const [lo, la] of allCoords) {
+            if (lo < mnLon) mnLon = lo; if (lo > mxLon) mxLon = lo;
+            if (la < mnLat) mnLat = la; if (la > mxLat) mxLat = la;
+          }
+          if (isFinite(mnLon))
+            map.fitBounds([[mnLon, mnLat], [mxLon, mxLat]], { padding: 80, maxZoom: 17, duration: 600 });
+        }
+      } else if (failBounds) {
+        map.fitBounds(failBounds, { padding: 100, maxZoom: 17, duration: 600 });
+      }
+      // Pulse red — only meaningful when there is something to pulse.
+      if (routeFeats.length > 0 || failBounds) {
+        try {
+          map.setPaintProperty('replay-route-line',   'line-color', '#ef4444');
+          map.setPaintProperty('replay-route-casing', 'line-color', '#7f1d1d');
+        } catch (_) {}
+        if (routePulseRef.current) cancelAnimationFrame(routePulseRef.current);
+        const fp0 = performance.now();
+        const FAIL_PULSE_MS = 3000;
+        const animFail = (now) => {
+          if (!map.getLayer('replay-route-line')) return;
+          const elapsed = now - fp0;
+          const done    = elapsed >= FAIL_PULSE_MS;
+          const swell   = Math.abs(Math.sin((elapsed / 500) * Math.PI));
+          try {
+            map.setPaintProperty('replay-route-line',   'line-width',   done ? 6  : 5  + 4 * swell);
+            map.setPaintProperty('replay-route-line',   'line-opacity', done ? 0.85 : 0.7 + 0.3 * swell);
+            map.setPaintProperty('replay-route-casing', 'line-width',   done ? 10 : 9  + 4 * swell);
+            map.setPaintProperty('replay-route-casing', 'line-opacity', done ? 0.6  : 0.5 + 0.3 * swell);
+          } catch (_) { return; }
+          if (!done) routePulseRef.current = requestAnimationFrame(animFail);
+          else routePulseRef.current = null;
+        };
+        routePulseRef.current = requestAnimationFrame(animFail);
+      }
     }
 
     // Follow each A* node: instant jump so playback stays in sync.
@@ -2159,13 +2295,56 @@ export default function MapView({ tilesBase, ready }) {
         : []),
     ];
 
+    // Cancel any in-progress post-decode fade
+    if (decodePulseRef.current) { cancelAnimationFrame(decodePulseRef.current); decodePulseRef.current = null; }
+
     if (fitCoords.length > 0) {
       const lngs = fitCoords.map(c => c[0]);
       const lats = fitCoords.map(c => c[1]);
       const bounds = [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]];
-      const doFit = () => map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 17 });
       // Defer one frame so MapLibre has processed the setData calls first
-      requestAnimationFrame(doFit);
+      requestAnimationFrame(() => {
+        map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 17 });
+        // After the camera settles, run the green pulse → cyan fade on the decoded path.
+        if (decodeResult?.ok) {
+          map.once('moveend', () => {
+            if (!map.getLayer('decoded-path-line')) return;
+            // Phase 1: 3 s green pulse (matching replay route_found animation)
+            // Phase 2: 1.5 s colour/width fade from green → normal cyan
+            const GREEN = [22, 163, 74];   // #16a34a
+            const CYAN  = [0, 212, 255];   // #00d4ff
+            const lerpRgb = (a, b, t) =>
+              `rgb(${Math.round(a[0]+(b[0]-a[0])*t)},${Math.round(a[1]+(b[1]-a[1])*t)},${Math.round(a[2]+(b[2]-a[2])*t)})`;
+            const PULSE_MS = 1500, FADE_MS = 1500;
+            const t0 = performance.now();
+            const anim = (now) => {
+              if (!map.getLayer('decoded-path-line')) return;
+              const elapsed = now - t0;
+              try {
+                if (elapsed < PULSE_MS) {
+                  const swell = Math.abs(Math.sin((elapsed / 500) * Math.PI));
+                  map.setPaintProperty('decoded-path-line', 'line-color',   '#16a34a');
+                  map.setPaintProperty('decoded-path-line', 'line-width',   5 + 4 * swell);
+                  map.setPaintProperty('decoded-path-line', 'line-opacity', 0.7 + 0.3 * swell);
+                  decodePulseRef.current = requestAnimationFrame(anim);
+                } else if (elapsed < PULSE_MS + FADE_MS) {
+                  const t = (elapsed - PULSE_MS) / FADE_MS;
+                  map.setPaintProperty('decoded-path-line', 'line-color',   lerpRgb(GREEN, CYAN, t));
+                  map.setPaintProperty('decoded-path-line', 'line-width',   9 - 4 * t);   // 9 → 5
+                  map.setPaintProperty('decoded-path-line', 'line-opacity', 0.9);
+                  decodePulseRef.current = requestAnimationFrame(anim);
+                } else {
+                  map.setPaintProperty('decoded-path-line', 'line-color',   '#00d4ff');
+                  map.setPaintProperty('decoded-path-line', 'line-width',   5);
+                  map.setPaintProperty('decoded-path-line', 'line-opacity', 0.9);
+                  decodePulseRef.current = null;
+                }
+              } catch (_) { decodePulseRef.current = null; }
+            };
+            decodePulseRef.current = requestAnimationFrame(anim);
+          });
+        }
+      });
     }
   }, [decodeResult]);
 
