@@ -12,6 +12,7 @@ pub use params::{DecodeParams, Preset};
 pub use route_generator::RouteGenerator;
 pub use tile_prefetch::prefetch_tile_keys;
 pub use trace::{DecodeEvent, DecodeOutcome, DecodeTrace, TraceLevel};
+pub use trace::{ScoredCandidate, ProjectionResult, CandidateScore};
 pub use wkt::{path_to_wkt, path_band_wkt};
 
 use std::collections::HashMap;
@@ -23,7 +24,7 @@ use openlr_graph::{Graph, NodeId, SegmentId, TileKey};
 use astar::find_route;
 use candidate::select_candidates;
 use route_generator::RouteGenerator as Gen;
-use trace::{DecodeTrace as Trace, RoutingFailure, ScoredCandidate, TraversalDir};
+use trace::{DecodeTrace as Trace, RoutingFailure, TraversalDir};
 use validation::validate_dnp;
 
 // (exit_node, entry_node, effective_lfrcnp) → None (A* found no path) or Some((segs, interior_length_m))
@@ -155,6 +156,7 @@ pub fn decode(
     // `needs_tile` is set when A* encounters a boundary node whose home tile is
     // not loaded.  It lives outside the block so we can inspect it after `t` drops.
     let mut needs_tile: Option<TileKey> = None;
+    let mut deepest_failed_leg: usize = 0;
     let route_result: Option<(Vec<SegmentId>, f64, Vec<usize>)> = {
         let t = trace.get_or_insert_with(|| Trace::new(params.clone()));
         let mut route_cache: RouteCache = HashMap::new();
@@ -198,9 +200,10 @@ pub fn decode(
 
                         if is_same_seg || is_adjacent {
                             let indices = vec![i, j];
+                            let mut fl = 0usize;
                             if let Some((p, len)) = try_route_combination(
                                 &indices, &all_candidates, lrps, graph, params, t,
-                                &mut route_cache, &mut needs_tile, zoom,
+                                &mut route_cache, &mut needs_tile, zoom, &mut fl,
                             ) {
                                 break 'precheck Some((p, len, indices));
                             }
@@ -229,18 +232,20 @@ pub fn decode(
                         break 'search None;
                     }
                     route_attempts += 1;
+                    let mut failed_leg = 0usize;
                     if let Some((p, len)) = try_route_combination(
                         &indices, &all_candidates, lrps, graph, params, t,
-                        &mut route_cache, &mut needs_tile, zoom,
+                        &mut route_cache, &mut needs_tile, zoom, &mut failed_leg,
                     ) {
                         break 'search Some((p, len, indices));
                     }
                     if needs_tile.is_some() { break 'search None; }
+                    deepest_failed_leg = deepest_failed_leg.max(failed_leg);
                 }
                 None
             };
             if found.is_none() && needs_tile.is_none() {
-                let outcome = DecodeOutcome::NoRoute { leg: 0 };
+                let outcome = DecodeOutcome::NoRoute { leg: deepest_failed_leg };
                 t.push_summary(DecodeEvent::DecodeComplete(outcome));
             }
             found
@@ -254,7 +259,7 @@ pub fn decode(
 
     let (path, total_path_m, winning_indices): (Vec<SegmentId>, f64, Vec<usize>) = match route_result {
         Some(r) => r,
-        None => return Err(DecodeFailure { error: DecodeError::AllCombinationsFailed(0), trace }),
+        None => return Err(DecodeFailure { error: DecodeError::AllCombinationsFailed(deepest_failed_leg), trace }),
     };
 
     // ── 3. Offsets ──────────────────────────────────────────────────────────
@@ -376,6 +381,7 @@ fn try_route_combination(
     cache: &mut RouteCache,
     needs_tile: &mut Option<TileKey>,
     zoom: u8,
+    out_failed_leg: &mut usize,
 ) -> Option<(Vec<SegmentId>, f64)> {
     let mut path: Vec<SegmentId> = Vec::new();
     let mut total_path_m: f64 = 0.0;
@@ -400,6 +406,7 @@ fn try_route_combination(
         {
             let direct_m = to.projection.arc_offset_m - from.projection.arc_offset_m;
             if validate_dnp(leg, direct_m, dnp, params, trace).is_err() {
+                *out_failed_leg = leg;
                 return None;
             }
             trace.push_summary(DecodeEvent::RouteFound {
@@ -426,7 +433,7 @@ fn try_route_combination(
         let cached = cache.get(&key).cloned();
         let (segments, interior_m) = match cached {
             Some(Some((segs, len))) => (segs, len),
-            Some(None) => return None,
+            Some(None) => { *out_failed_leg = leg; return None; }
             None => {
                 // Not yet known — run A*.
                 trace.push_summary(DecodeEvent::RouteSearchStarted {
@@ -456,6 +463,7 @@ fn try_route_combination(
                     Err(reason) => {
                         trace.push_summary(DecodeEvent::RouteFailed { leg, reason });
                         cache.insert(key, None);  // true A* failure — no path
+                        *out_failed_leg = leg;
                         return None;
                     }
                 }
@@ -474,6 +482,7 @@ fn try_route_combination(
         let full_length_m = from_partial + interior_m + to_partial;
 
         if validate_dnp(leg, full_length_m, dnp, params, trace).is_err() {
+            *out_failed_leg = leg;
             return None;
         }
 
@@ -514,6 +523,138 @@ fn try_route_combination(
     }
 
     Some((path, total_path_m))
+}
+
+// ── Forced decode (skip candidate selection) ──────────────────────────────────
+
+/// Decode with pre-selected candidates — candidate selection is skipped entirely.
+///
+/// `forced_snaps` must contain exactly one `ScoredCandidate` per LRP.  Routing,
+/// DNP validation, offset trimming, and PAL computation run unchanged.
+pub fn decode_forced(
+    loc_ref: &LocationReference,
+    forced_snaps: Vec<ScoredCandidate>,
+    graph: &Graph,
+    params: &DecodeParams,
+    zoom: u8,
+) -> Result<DecodedLocation, DecodeFailure> {
+    let lrps = loc_ref.lrps.as_slice();
+    let n_lrps = lrps.len();
+    assert_eq!(forced_snaps.len(), n_lrps, "one snap required per LRP");
+    let is_pal = loc_ref.location_type == LocationType::PointAlongLine;
+
+    let mut trace = if params.trace_level != TraceLevel::Off {
+        Some(Trace::new(params.clone()))
+    } else {
+        None
+    };
+
+    let all_candidates: Vec<Vec<ScoredCandidate>> =
+        forced_snaps.into_iter().map(|s| vec![s]).collect();
+    let indices: Vec<usize> = vec![0; n_lrps];
+
+    let mut deepest_failed_leg: usize = 0;
+    let mut needs_tile: Option<TileKey> = None;
+    let route_result: Option<(Vec<SegmentId>, f64)> = {
+        let t = trace.get_or_insert_with(|| Trace::new(params.clone()));
+        let mut route_cache: RouteCache = HashMap::new();
+        let result = try_route_combination(
+            &indices, &all_candidates, lrps, graph, params, t,
+            &mut route_cache, &mut needs_tile, zoom, &mut deepest_failed_leg,
+        );
+        if result.is_none() && needs_tile.is_none() {
+            t.push_summary(DecodeEvent::DecodeComplete(
+                DecodeOutcome::NoRoute { leg: deepest_failed_leg },
+            ));
+        }
+        result
+    };
+
+    if let Some(tk) = needs_tile {
+        return Err(DecodeFailure { error: DecodeError::NeedsTile(tk), trace: None });
+    }
+
+    let (path, total_path_m) = match route_result {
+        Some(r) => r,
+        None => return Err(DecodeFailure {
+            error: DecodeError::AllCombinationsFailed(deepest_failed_leg),
+            trace,
+        }),
+    };
+
+    // ── Offsets ───────────────────────────────────────────────────────────────
+    let pos_offset: Option<LinearInterval> = lrps.first().and_then(|l| {
+        l.pos_offset_raw.map(|n| LinearInterval {
+            lb: n as f64 / 256.0 * total_path_m,
+            ub: (n as f64 + 1.0) / 256.0 * total_path_m,
+        }).or(l.pos_offset)
+    });
+    let neg_offset: Option<LinearInterval> = lrps.last().and_then(|l| {
+        l.neg_offset_raw.map(|n| LinearInterval {
+            lb: n as f64 / 256.0 * total_path_m,
+            ub: (n as f64 + 1.0) / 256.0 * total_path_m,
+        }).or(l.neg_offset)
+    });
+    {
+        let t = trace.get_or_insert_with(|| Trace::new(params.clone()));
+        if let Some(interval) = pos_offset {
+            t.push_summary(trace::DecodeEvent::OffsetApplied { is_positive: true, interval });
+        }
+        if let Some(interval) = neg_offset {
+            t.push_summary(trace::DecodeEvent::OffsetApplied { is_positive: false, interval });
+        }
+    }
+    let combined_offset_lb =
+        pos_offset.map_or(0.0, |i| i.lb) + neg_offset.map_or(0.0, |i| i.lb);
+    if (pos_offset.is_some() || neg_offset.is_some()) && combined_offset_lb >= total_path_m {
+        return Err(DecodeFailure {
+            error: DecodeError::OffsetOverflow {
+                combined_lb_m: combined_offset_lb,
+                path_m: total_path_m,
+                path: path.clone(),
+            },
+            trace,
+        });
+    }
+
+    // ── Snap points, traversal directions ────────────────────────────────────
+    let first_lrp_arc_m     = all_candidates[0][0].projection.arc_offset_m;
+    let last_lrp_arc_m      = all_candidates[n_lrps - 1][0].projection.arc_offset_m;
+    let first_seg_traversal = all_candidates[0][0].traversal;
+    let last_seg_traversal  = all_candidates[n_lrps - 1][0].traversal;
+
+    let lrp_snap_points: Vec<(f64, f64)> =
+        all_candidates.iter().map(|c| c[0].projection.point).collect();
+    let lrp_snap_is_endpoint: Vec<bool> =
+        all_candidates.iter().map(|c| {
+            let p = &c[0].projection;
+            p.is_at_entry || p.is_at_exit
+        }).collect();
+    let lrp_snap_distances_m: Vec<f64> =
+        all_candidates.iter().map(|c| c[0].projection.distance_m).collect();
+
+    // ── PAL ───────────────────────────────────────────────────────────────────
+    let (point_coord, orientation, side_of_road) = if is_pal {
+        let dist = first_lrp_arc_m + pos_offset.map_or(0.0, |i| i.lb);
+        let pt = wkt::point_at_path_distance(&path, dist, first_seg_traversal, graph);
+        (pt, loc_ref.orientation, loc_ref.side_of_road)
+    } else {
+        (None, None, None)
+    };
+
+    let outcome = DecodeOutcome::Success { path: path.clone(), pos_offset, neg_offset };
+    if let Some(t) = &mut trace {
+        t.push_summary(DecodeEvent::DecodeComplete(outcome));
+    }
+
+    Ok(DecodedLocation {
+        path, pos_offset, neg_offset,
+        first_lrp_arc_m, last_lrp_arc_m,
+        first_seg_traversal, last_seg_traversal,
+        lrp_snap_points, lrp_snap_is_endpoint, lrp_snap_distances_m,
+        trace,
+        point_coord, orientation, side_of_road,
+    })
 }
 
 #[cfg(test)]

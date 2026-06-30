@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useStore, getSegGeomCache } from '../store.js';
 import { verdictType } from '../replayEngine.js';
 
@@ -66,6 +66,32 @@ function parseTraceEvents(events) {
     }
   }
   return { candidates, routing, offsets, decodeComplete };
+}
+
+// ── Attempt matching ──────────────────────────────────────────────────────────
+
+// Returns { tried: true } if every leg had a RouteSearchStarted event matching the
+// pinned segment+traversal pair, or { tried: false, untried_leg: N } otherwise.
+function matchAttempts(originalTrace, pinnedSnaps) {
+  if (!originalTrace?.events || !pinnedSnaps?.length) return null;
+  const legs = pinnedSnaps.length - 1;
+  const byLeg = {};
+  for (const event of originalTrace.events) {
+    const [type, data] = Object.entries(event)[0];
+    if (type === 'RouteSearchStarted') {
+      (byLeg[data.leg] ??= []).push(data);
+    }
+  }
+  for (let leg = 0; leg < legs; leg++) {
+    const from = pinnedSnaps[leg];
+    const to   = pinnedSnaps[leg + 1];
+    const found = (byLeg[leg] ?? []).some(a =>
+      a.from.segment_id === from.segment_id && a.from.traversal === from.traversal &&
+      a.to.segment_id   === to.segment_id   && a.to.traversal   === to.traversal
+    );
+    if (!found) return { tried: false, untried_leg: leg };
+  }
+  return { tried: true };
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -326,7 +352,8 @@ function RejectedTable({ rejected, lrpIdx, setTraceHighlight, setCandidatePopup 
   );
 }
 
-function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight, setCandidatePopup }) {
+function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight, setCandidatePopup,
+                              pinnedCandidates, setPinnedCandidate }) {
   const ranked = phase?.ranked;
   if (!ranked) return null;
 
@@ -336,11 +363,12 @@ function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight, setCandi
     : `LRP ${lrpIdx + 1}`;
   const accepted = ranked.accepted ?? [];
   const rejected = ranked.rejected ?? [];
+  const pinned   = pinnedCandidates?.[lrpIdx];
 
   return (
     <Section
       title={`Candidates — ${subtitle}`}
-      badge={`${accepted.length} ✓  ${rejected.length} ✗`}
+      badge={`${accepted.length} ✓  ${rejected.length} ✗${pinned ? '  📌' : ''}`}
       defaultOpen={true}
     >
       {accepted.length === 0 ? (
@@ -349,6 +377,7 @@ function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight, setCandi
         <table className="tp-table tp-cand-table">
           <thead>
             <tr>
+              <th title="Pin this candidate for forced decode">📌</th>
               <th>#</th>
               <th>Seg Key</th>
               <th>Dir</th>
@@ -364,28 +393,49 @@ function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight, setCandi
             </tr>
           </thead>
           <tbody>
-            {accepted.map((c, i) => (
-              <tr key={i} className={i === 0 ? 'tp-best-row' : ''}>
-                <td className="tp-dim">{i}</td>
-                <td>
-                  <SegBtn segId={c.segment_id} setTraceHighlight={setTraceHighlight}
-                    onSelect={() => setCandidatePopup(buildCandPopup(
-                      c.segment_id, lrpIdx, c.traversal, 'accepted', i === 0,
-                      c.projection.point, c.projection, c.score, null
-                    ))} />
-                </td>
-                <td className="tp-dim">{c.traversal === 'Forward' ? 'Fwd' : 'Bwd'}</td>
-                <td>{c.projection.distance_m.toFixed(1)}</td>
-                <td>{c.projection.bearing_deg.toFixed(1)}</td>
-                <td>{c.projection.arc_offset_m.toFixed(1)}</td>
-                <td className="tp-score-total">{fmtScore(c.score.total)}</td>
-                <td className="tp-dim">{fmtScore(c.score.distance_score)}</td>
-                <td className="tp-dim">{fmtScore(c.score.bearing_score)}</td>
-                <td className="tp-dim">{fmtScore(c.score.frc_score)}</td>
-                <td className="tp-dim">{fmtScore(c.score.fow_score)}</td>
-                <td className="tp-dim">{fmtScore(c.score.wrong_endpoint_score)}</td>
-              </tr>
-            ))}
+            {accepted.map((c, i) => {
+              const isPinned = pinned?.segment_id === c.segment_id && pinned?.traversal === c.traversal;
+              return (
+                <tr key={i} className={[
+                  i === 0 ? 'tp-best-row' : '',
+                  isPinned ? 'tp-pinned-row' : '',
+                ].filter(Boolean).join(' ')}>
+                  <td>
+                    <button
+                      className={`tp-pin-btn${isPinned ? ' active' : ''}`}
+                      title={isPinned ? 'Unpin this candidate' : 'Pin for forced decode'}
+                      onClick={() => setPinnedCandidate(lrpIdx, isPinned ? null : {
+                        segment_id:   c.segment_id,
+                        traversal:    c.traversal,
+                        arc_offset_m: c.projection.arc_offset_m,
+                        snap_lon:     c.projection.point[0],
+                        snap_lat:     c.projection.point[1],
+                      })}
+                    >
+                      {isPinned ? '📌' : '·'}
+                    </button>
+                  </td>
+                  <td className="tp-dim">{i}</td>
+                  <td>
+                    <SegBtn segId={c.segment_id} setTraceHighlight={setTraceHighlight}
+                      onSelect={() => setCandidatePopup(buildCandPopup(
+                        c.segment_id, lrpIdx, c.traversal, 'accepted', i === 0,
+                        c.projection.point, c.projection, c.score, null
+                      ))} />
+                  </td>
+                  <td className="tp-dim">{c.traversal === 'Forward' ? 'Fwd' : 'Bwd'}</td>
+                  <td>{c.projection.distance_m.toFixed(1)}</td>
+                  <td>{c.projection.bearing_deg.toFixed(1)}</td>
+                  <td>{c.projection.arc_offset_m.toFixed(1)}</td>
+                  <td className="tp-score-total">{fmtScore(c.score.total)}</td>
+                  <td className="tp-dim">{fmtScore(c.score.distance_score)}</td>
+                  <td className="tp-dim">{fmtScore(c.score.bearing_score)}</td>
+                  <td className="tp-dim">{fmtScore(c.score.frc_score)}</td>
+                  <td className="tp-dim">{fmtScore(c.score.fow_score)}</td>
+                  <td className="tp-dim">{fmtScore(c.score.wrong_endpoint_score)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -575,11 +625,65 @@ function ResultSection({ decodeResult }) {
   );
 }
 
+// ── Forced decode result section ──────────────────────────────────────────────
+
+function ForcedDecodeSection({ forcedDecodeResult, originalTrace, pinnedSnaps, setTraceHighlight }) {
+  if (!forcedDecodeResult) return null;
+
+  const match = useMemo(
+    () => matchAttempts(originalTrace, pinnedSnaps),
+    [originalTrace, pinnedSnaps],
+  );
+
+  const ok = forcedDecodeResult.ok;
+  return (
+    <Section title="Forced Decode Result" badge={ok ? '✓ routed' : '✗ failed'} badgeOk={ok} defaultOpen={true}>
+      <div className={`tp-row ${ok ? 'tp-ok' : 'tp-err'}`}>
+        {ok
+          ? `✓ Routed · ${forcedDecodeResult.segments?.length ?? 0} segment${forcedDecodeResult.segments?.length !== 1 ? 's' : ''}`
+          : `✗ ${forcedDecodeResult.error}`}
+      </div>
+
+      {match && (
+        <div className={`tp-row ${match.tried ? 'tp-dim' : 'tp-warn'}`}>
+          {match.tried
+            ? '✓ This combination was tried by the engine (found in routing trace)'
+            : `⚠ Leg ${match.untried_leg + 1} pair not found in routing trace — combination not previously attempted`}
+        </div>
+      )}
+
+      {ok && forcedDecodeResult.wkt && (
+        <div className="tp-wkt-row">
+          <div className="tp-wkt tp-monospace tp-dim">
+            {forcedDecodeResult.wkt.slice(0, 140)}{forcedDecodeResult.wkt.length > 140 ? '…' : ''}
+          </div>
+          <button className="tp-copy-btn" title="Copy forced WKT"
+            onClick={() => navigator.clipboard.writeText(forcedDecodeResult.wkt)}>⎘</button>
+        </div>
+      )}
+
+      {ok && forcedDecodeResult.segments?.length > 0 && (
+        <div className="tp-route-path">
+          <button
+            className="tp-seg-btn"
+            onClick={() => setTraceHighlight(forcedDecodeResult.segments.map(s => s.segment_id))}
+            title="Highlight forced-decode path"
+          >
+            [{forcedDecodeResult.segments.length} segs] highlight
+          </button>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 export default function TracePanel() {
   const { decodeResult, openlrString, params, setParam,
-          setTraceHighlight, setTraceLrpFocus, replaySteps, setCandidatePopup } = useStore();
+          setTraceHighlight, setTraceLrpFocus, replaySteps, setCandidatePopup,
+          pinnedCandidates, setPinnedCandidate, clearPinnedCandidates,
+          forcedDecodeResult, forcedDecoding, runForcedDecode } = useStore();
 
   const traceLevel = params.trace_level ?? 'Summary';
   const trace = decodeResult?.trace;
@@ -590,6 +694,32 @@ export default function TracePanel() {
 
   const lrpCount = lrps.length;
   const legCount = lrpCount > 1 ? lrpCount - 1 : 0;
+
+  const pinnedCount = Object.values(pinnedCandidates).filter(Boolean).length;
+  const allPinned = lrpCount > 0 && pinnedCount === lrpCount;
+  const pinnedSnaps = allPinned
+    ? Array.from({ length: lrpCount }, (_, i) => pinnedCandidates[i])
+    : null;
+
+  // "Pin best" is enabled only when every LRP has at least one accepted candidate.
+  const canPinBest = lrpCount > 0 && Array.from({ length: lrpCount }, (_, i) =>
+    (candidates[i]?.ranked?.accepted?.length ?? 0) > 0
+  ).every(Boolean);
+
+  const pinBestCandidates = () => {
+    for (let i = 0; i < lrpCount; i++) {
+      const best = candidates[i]?.ranked?.accepted?.[0];
+      if (best) {
+        setPinnedCandidate(i, {
+          segment_id:   best.segment_id,
+          traversal:    best.traversal,
+          arc_offset_m: best.projection.arc_offset_m,
+          snap_lon:     best.projection.point[0],
+          snap_lat:     best.projection.point[1],
+        });
+      }
+    }
+  };
 
   const copyJson = () => {
     navigator.clipboard.writeText(JSON.stringify(decodeResult, null, 2)).catch(() => {});
@@ -650,8 +780,41 @@ export default function TracePanel() {
                 lrpInfo={lrps}
                 setTraceHighlight={setTraceHighlight}
                 setCandidatePopup={setCandidatePopup}
+                pinnedCandidates={pinnedCandidates}
+                setPinnedCandidate={setPinnedCandidate}
               />
             ))}
+
+            {(pinnedCount > 0 || canPinBest) && (
+              <div className="tp-forced-bar">
+                <button
+                  className="tp-pin-best-btn"
+                  onClick={pinBestCandidates}
+                  disabled={!canPinBest}
+                  title="Pin the top-ranked candidate for every LRP"
+                >
+                  📌 Pin best candidates
+                </button>
+                {pinnedCount > 0 && (
+                  <>
+                    <span className="tp-dim">{pinnedCount}/{lrpCount} pinned</span>
+                    {allPinned && (
+                      <button
+                        className="tp-rerun-btn"
+                        onClick={runForcedDecode}
+                        disabled={forcedDecoding}
+                        title="Re-run A* with exactly these candidates"
+                      >
+                        {forcedDecoding ? 'Routing…' : '▶ Re-run with pinned candidates'}
+                      </button>
+                    )}
+                    <button className="tp-clear-pins-btn" onClick={clearPinnedCandidates} title="Clear all pins">
+                      ✕ Clear pins
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
 
             {Array.from({ length: legCount }, (_, i) => (
               <RoutingSection
@@ -667,6 +830,13 @@ export default function TracePanel() {
             {offsets.length > 0 && <OffsetsSection offsets={offsets} />}
 
             <ResultSection decodeResult={decodeResult} />
+
+            <ForcedDecodeSection
+              forcedDecodeResult={forcedDecodeResult}
+              originalTrace={trace}
+              pinnedSnaps={pinnedSnaps}
+              setTraceHighlight={setTraceHighlight}
+            />
           </>
         )}
       </div>

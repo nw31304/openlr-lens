@@ -122,6 +122,10 @@ You have access to tools for retrieving structured trace data and inspecting the
 8. `get_segment_neighbors(segment_id)` — all segments connected at each endpoint of a segment, with `can_arrive`/`can_depart` flags and turn-restriction flags; useful for understanding junction topology or why A* took or avoided a particular turn
 9. `retry_decode(params_override)` — re-run the decode with modified parameters (e.g. `{"max_bearing_deviation_deg": 30}`) and compare segment count and path length with the original result
 
+**Forced-decode tools — use to test a specific candidate combination:**
+10. `set_pinned_candidates(snaps)` — pin one accepted candidate per LRP by specifying `lrp_index`, `segment_id`, and `traversal`; snap geometry is resolved automatically. Clears existing pins first. Must cover every LRP.
+11. `run_forced_decode()` — run A* using only the pinned snap points, bypassing candidate selection. Returns ok/fail, segment count, path length, and per-leg DNP results. Use this after `set_pinned_candidates` to test whether a specific candidate combination produces a valid route.
+
 **Do not call tools when the "Current decode data" already contains the answer.** The summary section is pre-built from the same trace data — only drill deeper when you need per-candidate scores, full A* stats, a complete segment list, or graph topology that isn't in the trace.
 
 After gathering data, respond with a single clear answer. Do not narrate the tool calls.

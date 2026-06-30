@@ -154,6 +154,9 @@ export const useStore = create(persist(
   showSegmentLayer: false,
   decoding: false,
   decodeResult: null,
+  forcedDecoding: false,
+  forcedDecodeResult: null,   // result from decode_forced(), null until user runs it
+  pinnedCandidates: {},       // { [lrpIdx]: { segment_id, traversal, arc_offset_m, snap_lon, snap_lat } | null }
   savedParamSets: {},      // { [name: string]: DecodeParams }
   highlightedSegment: null,
   traceHighlightSegIds: null,
@@ -271,11 +274,22 @@ export const useStore = create(persist(
       newApiEntries.push(assistantApiEntry);
       apiHistory = [...apiHistory, assistantApiEntry];
 
+      const storeActions = {
+        setPinnedCandidates: (snapsArray) => {
+          get().clearPinnedCandidates();
+          snapsArray.forEach(({ lrp_index, ...snap }) => get().setPinnedCandidate(lrp_index, snap));
+        },
+        runForcedDecodeAndGet: async () => {
+          await get().runForcedDecode();
+          return get().forcedDecodeResult;
+        },
+      };
+
       for (const tc of resp.tool_calls) {
         let toolResult;
         try {
           const args = JSON.parse(tc.function.arguments);
-          toolResult = executeTool(tc.function.name, args, { decodeResult, params, decoder: _decoder });
+          toolResult = await executeTool(tc.function.name, args, { decodeResult, params, decoder: _decoder, storeActions });
           toolCalls.push({
             label: toolCallLabel(tc.function.name, args),
             args_bytes: tc.function.arguments.length,
@@ -331,11 +345,81 @@ export const useStore = create(persist(
   clearCandidatePopup: () => set({ candidatePopup: null }),
   setTraceLrpFocus: (lrp) => set({ traceLrpFocus: lrp ? { ...lrp, _tick: Date.now() } : null }),
 
+  setPinnedCandidate: (lrpIdx, snap) => set(state => ({
+    pinnedCandidates: { ...state.pinnedCandidates, [lrpIdx]: snap ?? null },
+    forcedDecodeResult: null,  // invalidate when pins change
+  })),
+
+  clearPinnedCandidates: () => set({ pinnedCandidates: {}, forcedDecodeResult: null }),
+
+  runForcedDecode: async () => {
+    const { decodeResult, pinnedCandidates, params } = get();
+    if (!_decoder || !decodeResult) return;
+
+    const lrpCount = decodeResult.lrps?.length ?? 0;
+    const snaps = Array.from({ length: lrpCount }, (_, i) => pinnedCandidates[i]);
+    if (snaps.some(s => !s)) return;  // not all LRPs pinned
+
+    set({ forcedDecoding: true, forcedDecodeResult: null });
+    try {
+      const snapsJson = JSON.stringify(snaps);
+      const attemptedTiles = new Set();
+      const MAX_DYNAMIC_LOADS = 10;
+      let result = null;
+      for (let attempt = 0; attempt <= MAX_DYNAMIC_LOADS; attempt++) {
+        result = JSON.parse(_decoder.decode_forced(snapsJson));
+        if (!result.needs_tile) break;
+        const [z, x, y] = result.needs_tile;
+        const tileKey = `${z}/${x}/${y}`;
+        if (attemptedTiles.has(tileKey)) break;
+        attemptedTiles.add(tileKey);
+        try {
+          const res = await _pmtiles.getZxy(z, x, y);
+          if (res?.data) {
+            _decoder.load_tile(z, x, y, new Uint8Array(res.data));
+          } else {
+            _decoder.load_tile(z, x, y, new Uint8Array(0));
+          }
+        } catch (e) {
+          console.warn(`[forced-decode] tile ${tileKey} load failed:`, e?.message ?? e);
+          break;
+        }
+      }
+      // Enrich segments with source_id from tile geometry cache
+      for (const seg of result.segments ?? []) {
+        const feat = _segGeomCache.get(seg.segment_id);
+        if (feat) seg.source_id = feat.properties.source_id ?? null;
+      }
+
+      // Splice replay: candidate events from original trace, routing events from forced trace.
+      const originalEvents = get().decodeResult?.trace?.events ?? [];
+      const forcedEvents   = result.trace?.events ?? [];
+      const firstRouteOrig  = originalEvents.findIndex(e => e.RouteSearchStarted != null);
+      const firstRouteForced = forcedEvents.findIndex(e => e.RouteSearchStarted != null);
+      const candidateEvents = firstRouteOrig  >= 0 ? originalEvents.slice(0, firstRouteOrig)  : originalEvents;
+      const routingEvents   = firstRouteForced >= 0 ? forcedEvents.slice(firstRouteForced)      : [];
+      const splicedEvents   = [...candidateEvents, ...routingEvents];
+      const replayData = splicedEvents.length
+        ? buildReplaySteps(splicedEvents)
+        : { steps: [], stats: { maxG: 0, totalNodes: 0, phases: [] } };
+
+      set({
+        forcedDecoding: false,
+        forcedDecodeResult: result,
+        replaySteps: replayData.steps,
+        replayStats: replayData.stats,
+        replayStep:  0,
+      });
+    } catch (e) {
+      set({ forcedDecoding: false, forcedDecodeResult: { ok: false, error: String(e), segments: [] } });
+    }
+  },
+
   runDecode: async () => {
     const { openlrString, params } = get();
     if (!openlrString.trim() || !_pmtiles || !_decoder) return;
 
-    set({ decoding: true, decodeResult: null, highlightedSegment: null, traceHighlightSegIds: null, candidatePopup: null, llmMessages: [], llmApiHistory: [], llmLoading: false });
+    set({ decoding: true, decodeResult: null, highlightedSegment: null, traceHighlightSegIds: null, candidatePopup: null, llmMessages: [], llmApiHistory: [], llmLoading: false, pinnedCandidates: {}, forcedDecodeResult: null });
     _tileGeomCache = new Map();
     _segIdToTile   = new Map();
     _segGeomCache  = new Map();

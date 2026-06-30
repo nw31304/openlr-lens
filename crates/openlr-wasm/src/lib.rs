@@ -38,7 +38,8 @@ extern "C" {
 
 use openlr_codec::{decode_v3_base64, decode_tpeg_hex, decode_tpeg_base64};
 use openlr_codec::lrp::{LocationReference, LocationType, Orientation, SideOfRoad};
-use openlr_engine::{decode as engine_decode, DecodeError, DecodeParams, Preset, prefetch_tile_keys, path_to_wkt, path_band_wkt};
+use openlr_engine::{decode as engine_decode, decode_forced as engine_decode_forced, DecodeError, DecodeParams, Preset, prefetch_tile_keys, path_to_wkt, path_band_wkt};
+use openlr_engine::{ScoredCandidate, ProjectionResult, CandidateScore};
 use openlr_graph::{SegmentId, NodeId};
 use openlr_graph::{polyline_length_m, haversine_m, Direction};
 use openlr_engine::trace::TraversalDir;
@@ -214,6 +215,18 @@ impl DecodeResult {
             side_of_road: None,
         }
     }
+}
+
+// ── Forced-decode snap descriptor ────────────────────────────────────────────
+
+/// One pre-selected snap point, passed in `decode_forced()`.
+#[derive(serde::Deserialize)]
+struct SnapDescriptor {
+    segment_id: u32,
+    traversal: String,   // "Forward" or "Backward"
+    arc_offset_m: f64,
+    snap_lon: f64,
+    snap_lat: f64,
 }
 
 // ── Decoder ───────────────────────────────────────────────────────────────────
@@ -395,155 +408,97 @@ impl Decoder {
             Ok(r) => r,
         };
 
-        let lrps = lrp_info_vec(
-            &loc_ref.lrps,
-            &result.lrp_snap_points,
-            &result.lrp_snap_is_endpoint,
-            &result.lrp_snap_distances_m,
-        );
+        self.build_ok_json(loc_ref, result)
+    }
 
-        // Resolve offset intervals from the engine result (not from loc_ref.lrps, which
-        // only carries raw bytes for v3 — the engine computes the true [LB,UB] intervals
-        // once total path length is known).
-        let pos_int = result.pos_offset;
-        let neg_int = result.neg_offset;
-        let (pos_offset_lb, pos_offset_ub) = pos_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
-        let (neg_offset_lb, neg_offset_ub) = neg_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
-
-        // Display WKT: trimmed at LB — the maximal / most conservative extent.
-        // The [LB, UB] uncertainty caps are drawn as a distinct-colour overlay on top
-        // of this line; trimming at LB means the cap is wholly contained within it.
-        let wkt = path_to_wkt(
-            &result.path,
-            pos_offset_lb,
-            neg_offset_lb,
-            result.first_lrp_arc_m,
-            result.last_lrp_arc_m,
-            result.first_seg_traversal,
-            result.last_seg_traversal,
-            &self.loader.graph,
-        );
-
-        // No separate conservative_wkt needed — the main wkt is already LB-trimmed.
-        let conservative_wkt: Option<String> = None;
-
-        let n_path = result.path.len();
-        let segments: Vec<SegmentInfo> = result.path.iter().enumerate().filter_map(|(i, seg_id)| {
-            self.loader.graph.segments.get(seg_id).map(|seg| {
-                let (tile, local_index) = self.loader.seg_tile.get(seg_id)
-                    .map(|&(z, x, y, li)| (format!("{z}/{x}/{y}"), li))
-                    .unwrap_or_else(|| ("unknown".to_string(), 0));
-                // Use the explicit traversal direction for the first and last segments so
-                // the UI highlight geometry runs in the correct direction.  Interior
-                // segments are stored in their natural connectivity order and need no flip.
-                let traversal = if i == 0 {
-                    result.first_seg_traversal
-                } else if i == n_path - 1 {
-                    result.last_seg_traversal
-                } else {
-                    TraversalDir::Forward
-                };
-                let geometry: Vec<[f64; 2]> = match traversal {
-                    TraversalDir::Forward  => seg.geometry.iter().map(|&(lon, lat)| [lon, lat]).collect(),
-                    TraversalDir::Backward => seg.geometry.iter().rev().map(|&(lon, lat)| [lon, lat]).collect(),
-                };
-                SegmentInfo {
-                    frc: seg.frc,
-                    fow: seg.fow,
-                    direction: match seg.direction {
-                        Direction::Both     => "Both",
-                        Direction::Forward  => "Forward",
-                        Direction::Backward => "Backward",
-                    },
-                    length_m: (seg.length_m * 10.0).round() / 10.0,
-                    osm_way_id: seg.osm_way_id(),
-                    tile,
-                    local_index,
-                    segment_id: seg_id.0,
-                    geometry,
-                }
-            })
-        }).collect();
-
-        // ── Offset intervals and uncertainty bands ──────────────────────────
-
-        // Compute per-segment arc lengths once so both uncertainty bands can reuse them.
-        let actual_lens: Vec<f64> = result.path.iter()
-            .filter_map(|id| self.loader.graph.segments.get(id))
-            .map(|s| polyline_length_m(&s.geometry))
-            .collect();
-        let last_seg_len = actual_lens.last().copied().unwrap_or(0.0);
-
-        // Positive uncertainty: band from (first_lrp_arc + lb) to (first_lrp_arc + ub).
-        // Only meaningful when lb < ub (i.e., v3 encoding; TPEG has lb == ub).
-        let pos_uncertainty_wkt = pos_int
-            .filter(|i| i.ub > i.lb)
-            .and_then(|i| path_band_wkt(
-                &result.path,
-                result.first_lrp_arc_m + i.lb,
-                result.first_lrp_arc_m + i.ub,
-                result.first_seg_traversal,
-                &self.loader.graph,
-            ));
-
-        // Negative uncertainty: band at the tail.
-        // Last LRP position from path start = sum(segs[0..n-2]) + last_lrp_arc_m.
-        let last_lrp_pos_from_start: f64 = actual_lens[..actual_lens.len().saturating_sub(1)]
-            .iter().sum::<f64>() + result.last_lrp_arc_m.min(last_seg_len);
-        let neg_uncertainty_wkt = neg_int
-            .filter(|i| i.ub > i.lb)
-            .and_then(|i| path_band_wkt(
-                &result.path,
-                (last_lrp_pos_from_start - i.ub).max(0.0),
-                last_lrp_pos_from_start - i.lb,
-                result.first_seg_traversal,
-                &self.loader.graph,
-            ));
-
-        let trace_value = result.trace.and_then(|t| serde_json::to_value(t).ok());
-
-        let location_type = if loc_ref.location_type == LocationType::PointAlongLine {
-            "PointAlongLine".to_string()
-        } else {
-            "Line".to_string()
+    /// Forced decode: bypass candidate selection and run routing with exactly the
+    /// provided snap points (one per LRP).
+    ///
+    /// `snaps_json`: JSON array of snap descriptors:
+    /// `[{ "segment_id": u32, "traversal": "Forward"|"Backward",
+    ///     "arc_offset_m": f64, "snap_lon": f64, "snap_lat": f64 }, ...]`
+    ///
+    /// Precondition: `start()` must have been called for the current reference.
+    /// The tile graph from the previous decode is reused; additional tiles are
+    /// loaded on demand if A* discovers them.
+    ///
+    /// Returns the same JSON schema as `decode()`.
+    pub fn decode_forced(&self, snaps_json: &str) -> String {
+        let loc_ref = match &self.location_ref {
+            Some(r) => r,
+            None => return serde_json::to_string(&DecodeResult::err("call start() first")).unwrap(),
         };
-        let (point_lon, point_lat) = result.point_coord
-            .map(|(lon, lat)| (Some(lon), Some(lat)))
-            .unwrap_or((None, None));
-        let orientation = result.orientation.map(|o| match o {
-            Orientation::NoOrientation       => "NoOrientation",
-            Orientation::FirstTowardSecond   => "FirstTowardSecond",
-            Orientation::SecondTowardFirst   => "SecondTowardFirst",
-            Orientation::BothDirections      => "BothDirections",
-        }.to_string());
-        let side_of_road = result.side_of_road.map(|s| match s {
-            SideOfRoad::DirectlyOnOrNA => "DirectlyOnOrNA",
-            SideOfRoad::Right          => "Right",
-            SideOfRoad::Left           => "Left",
-            SideOfRoad::Both           => "Both",
-        }.to_string());
 
-        serde_json::to_string(&DecodeResult {
-            ok: true,
-            format: self.openlr_format.to_string(),
-            wkt,
-            segments,
-            lrps,
-            pos_offset_lb,
-            pos_offset_ub,
-            neg_offset_lb,
-            neg_offset_ub,
-            conservative_wkt,
-            pos_uncertainty_wkt,
-            neg_uncertainty_wkt,
-            error: None,
-            trace: trace_value,
-            location_type,
-            point_lon,
-            point_lat,
-            orientation,
-            side_of_road,
-        }).unwrap()
+        let snaps: Vec<SnapDescriptor> = match serde_json::from_str(snaps_json) {
+            Ok(v) => v,
+            Err(e) => return serde_json::to_string(
+                &DecodeResult::err(format!("invalid snaps: {e}"))).unwrap(),
+        };
+
+        if snaps.len() != loc_ref.lrps.len() {
+            return serde_json::to_string(&DecodeResult::err(format!(
+                "expected {} snaps (one per LRP), got {}", loc_ref.lrps.len(), snaps.len()
+            ))).unwrap();
+        }
+
+        let forced: Vec<ScoredCandidate> = match snaps.iter().map(|desc| {
+            let seg_id = SegmentId(desc.segment_id);
+            let seg = self.loader.graph.segments.get(&seg_id)
+                .ok_or_else(|| format!("segment {} not in loaded graph", desc.segment_id))?;
+            let traversal = match desc.traversal.as_str() {
+                "Backward" => TraversalDir::Backward,
+                _          => TraversalDir::Forward,
+            };
+            let (entry_node, exit_node) = match traversal {
+                TraversalDir::Backward => (seg.end_node, seg.start_node),
+                TraversalDir::Forward  => (seg.start_node, seg.end_node),
+            };
+            Ok(ScoredCandidate {
+                segment_id: seg_id,
+                traversal,
+                projection: ProjectionResult {
+                    arc_offset_m: desc.arc_offset_m,
+                    point:        (desc.snap_lon, desc.snap_lat),
+                    distance_m:   0.0,
+                    bearing_deg:  0.0,
+                    is_at_entry:  false,
+                    is_at_exit:   false,
+                },
+                score: CandidateScore {
+                    distance_score:       0.0,
+                    bearing_score:        0.0,
+                    frc_score:            0.0,
+                    fow_score:            0.0,
+                    interior_score:       0.0,
+                    wrong_endpoint_score: 0.0,
+                    total:                0.0,
+                },
+                entry_node,
+                exit_node,
+            })
+        }).collect::<Result<Vec<_>, String>>() {
+            Ok(v)  => v,
+            Err(e) => return serde_json::to_string(&DecodeResult::err(e)).unwrap(),
+        };
+
+        match engine_decode_forced(loc_ref, forced, &self.loader.graph, &self.params, self.zoom) {
+            Err(failure) => {
+                if let DecodeError::NeedsTile(tk) = failure.error {
+                    return serde_json::to_string(&NeedsTileResult {
+                        needs_tile: [tk.z as u32, tk.x, tk.y],
+                    }).unwrap();
+                }
+                let error_str = failure.error.to_string();
+                let trace_value = failure.trace.and_then(|t| serde_json::to_value(t).ok());
+                serde_json::to_string(&DecodeResult {
+                    lrps:  lrp_info_vec(&loc_ref.lrps, &[], &[], &[]),
+                    format: self.openlr_format.to_string(),
+                    trace: trace_value,
+                    ..DecodeResult::err(&error_str)
+                }).unwrap()
+            }
+            Ok(result) => self.build_ok_json(loc_ref, result),
+        }
     }
 
     /// Clear the stored location reference.  The loaded tile graph is kept so
@@ -812,6 +767,145 @@ impl Decoder {
             "lrp_count": parsed["lrps"].as_array().map(|a| a.len()),
             "params_applied": merged,
         }).to_string()
+    }
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+impl Decoder {
+    /// Build the JSON success response from a `DecodedLocation`.
+    /// Shared by `decode()` and `decode_forced()`.
+    fn build_ok_json(&self, loc_ref: &LocationReference, result: openlr_engine::DecodedLocation) -> String {
+        let lrps = lrp_info_vec(
+            &loc_ref.lrps,
+            &result.lrp_snap_points,
+            &result.lrp_snap_is_endpoint,
+            &result.lrp_snap_distances_m,
+        );
+
+        let pos_int = result.pos_offset;
+        let neg_int = result.neg_offset;
+        let (pos_offset_lb, pos_offset_ub) = pos_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
+        let (neg_offset_lb, neg_offset_ub) = neg_int.map(|i| (i.lb, i.ub)).unwrap_or((0.0, 0.0));
+
+        let wkt = path_to_wkt(
+            &result.path,
+            pos_offset_lb,
+            neg_offset_lb,
+            result.first_lrp_arc_m,
+            result.last_lrp_arc_m,
+            result.first_seg_traversal,
+            result.last_seg_traversal,
+            &self.loader.graph,
+        );
+
+        let n_path = result.path.len();
+        let segments: Vec<SegmentInfo> = result.path.iter().enumerate().filter_map(|(i, seg_id)| {
+            self.loader.graph.segments.get(seg_id).map(|seg| {
+                let (tile, local_index) = self.loader.seg_tile.get(seg_id)
+                    .map(|&(z, x, y, li)| (format!("{z}/{x}/{y}"), li))
+                    .unwrap_or_else(|| ("unknown".to_string(), 0));
+                let traversal = if i == 0 {
+                    result.first_seg_traversal
+                } else if i == n_path - 1 {
+                    result.last_seg_traversal
+                } else {
+                    TraversalDir::Forward
+                };
+                let geometry: Vec<[f64; 2]> = match traversal {
+                    TraversalDir::Forward  => seg.geometry.iter().map(|&(lon, lat)| [lon, lat]).collect(),
+                    TraversalDir::Backward => seg.geometry.iter().rev().map(|&(lon, lat)| [lon, lat]).collect(),
+                };
+                SegmentInfo {
+                    frc: seg.frc,
+                    fow: seg.fow,
+                    direction: match seg.direction {
+                        Direction::Both     => "Both",
+                        Direction::Forward  => "Forward",
+                        Direction::Backward => "Backward",
+                    },
+                    length_m: (seg.length_m * 10.0).round() / 10.0,
+                    osm_way_id: seg.osm_way_id(),
+                    tile,
+                    local_index,
+                    segment_id: seg_id.0,
+                    geometry,
+                }
+            })
+        }).collect();
+
+        let actual_lens: Vec<f64> = result.path.iter()
+            .filter_map(|id| self.loader.graph.segments.get(id))
+            .map(|s| polyline_length_m(&s.geometry))
+            .collect();
+        let last_seg_len = actual_lens.last().copied().unwrap_or(0.0);
+
+        let pos_uncertainty_wkt = pos_int
+            .filter(|i| i.ub > i.lb)
+            .and_then(|i| path_band_wkt(
+                &result.path,
+                result.first_lrp_arc_m + i.lb,
+                result.first_lrp_arc_m + i.ub,
+                result.first_seg_traversal,
+                &self.loader.graph,
+            ));
+
+        let last_lrp_pos_from_start: f64 = actual_lens[..actual_lens.len().saturating_sub(1)]
+            .iter().sum::<f64>() + result.last_lrp_arc_m.min(last_seg_len);
+        let neg_uncertainty_wkt = neg_int
+            .filter(|i| i.ub > i.lb)
+            .and_then(|i| path_band_wkt(
+                &result.path,
+                (last_lrp_pos_from_start - i.ub).max(0.0),
+                last_lrp_pos_from_start - i.lb,
+                result.first_seg_traversal,
+                &self.loader.graph,
+            ));
+
+        let trace_value = result.trace.and_then(|t| serde_json::to_value(t).ok());
+
+        let location_type = if loc_ref.location_type == LocationType::PointAlongLine {
+            "PointAlongLine".to_string()
+        } else {
+            "Line".to_string()
+        };
+        let (point_lon, point_lat) = result.point_coord
+            .map(|(lon, lat)| (Some(lon), Some(lat)))
+            .unwrap_or((None, None));
+        let orientation = result.orientation.map(|o| match o {
+            Orientation::NoOrientation       => "NoOrientation",
+            Orientation::FirstTowardSecond   => "FirstTowardSecond",
+            Orientation::SecondTowardFirst   => "SecondTowardFirst",
+            Orientation::BothDirections      => "BothDirections",
+        }.to_string());
+        let side_of_road = result.side_of_road.map(|s| match s {
+            SideOfRoad::DirectlyOnOrNA => "DirectlyOnOrNA",
+            SideOfRoad::Right          => "Right",
+            SideOfRoad::Left           => "Left",
+            SideOfRoad::Both           => "Both",
+        }.to_string());
+
+        serde_json::to_string(&DecodeResult {
+            ok: true,
+            format: self.openlr_format.to_string(),
+            wkt,
+            segments,
+            lrps,
+            pos_offset_lb,
+            pos_offset_ub,
+            neg_offset_lb,
+            neg_offset_ub,
+            conservative_wkt: None,
+            pos_uncertainty_wkt,
+            neg_uncertainty_wkt,
+            error: None,
+            trace: trace_value,
+            location_type,
+            point_lon,
+            point_lat,
+            orientation,
+            side_of_road,
+        }).unwrap()
     }
 }
 

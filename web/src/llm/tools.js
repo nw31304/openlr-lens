@@ -172,6 +172,48 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'set_pinned_candidates',
+      description:
+        'Pin one specific accepted candidate per LRP so that run_forced_decode routes through exactly those snap points. '
+        + 'Clears any existing pins first. Every LRP in the reference must be covered — pass one entry per LRP index. '
+        + 'Snap geometry is resolved automatically from the trace; you only need segment_id and traversal from get_lrp_candidates. '
+        + 'Returns the number of LRPs pinned or an error if a specified candidate was not in the accepted list.',
+      parameters: {
+        type: 'object',
+        properties: {
+          snaps: {
+            type: 'array',
+            description: 'One entry per LRP, in LRP order.',
+            items: {
+              type: 'object',
+              properties: {
+                lrp_index:  { type: 'integer', description: 'Zero-based LRP index.' },
+                segment_id: { type: 'integer', description: 'Internal segment ID from get_lrp_candidates.' },
+                traversal:  { type: 'string',  description: '"Forward" or "Backward".' },
+              },
+              required: ['lrp_index', 'segment_id', 'traversal'],
+            },
+          },
+        },
+        required: ['snaps'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_forced_decode',
+      description:
+        'Run A* using the currently pinned candidates (set via set_pinned_candidates). '
+        + 'Skips candidate selection entirely — only routes between the pinned snap points. '
+        + 'Returns ok/fail, segment count, total path length, and per-leg DNP outcome. '
+        + 'All LRPs must be pinned before calling; returns an error otherwise.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
 ];
 
 // ── TOON (Token-Oriented Object Notation) helpers ─────────────────────────────
@@ -236,7 +278,8 @@ function getTraceEvents(events, variant) {
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
 
-export function executeTool(name, args, { decodeResult, params, decoder }) {
+// storeActions: { setPinnedCandidates(snapsArray), runForcedDecodeAndGet() → Promise<result> }
+export async function executeTool(name, args, { decodeResult, params, decoder, storeActions }) {
   if (!decodeResult) return JSON.stringify({ error: 'No decode result available.' });
 
   const events = decodeResult.trace?.events ?? [];
@@ -508,6 +551,56 @@ export function executeTool(name, args, { decodeResult, params, decoder }) {
         ? params_override
         : JSON.stringify(params_override);
       return decoder.retry_decode(overrideStr);
+    }
+
+    case 'set_pinned_candidates': {
+      const { snaps } = args;
+      if (!storeActions) return JSON.stringify({ error: 'Store actions not available.' });
+      const ranked = getTraceEvents(events, 'CandidatesRanked');
+      const resolved = [];
+      const errs = [];
+      for (const { lrp_index, segment_id, traversal } of snaps) {
+        const lrpData = ranked.find(e => e.lrp_idx === lrp_index);
+        if (!lrpData) { errs.push(`LRP ${lrp_index}: no candidate trace data`); continue; }
+        const c = (lrpData.accepted ?? []).find(
+          a => a.segment_id === segment_id && a.traversal === traversal
+        );
+        if (!c) { errs.push(`LRP ${lrp_index}: segment ${segment_id} (${traversal}) not in accepted list`); continue; }
+        resolved.push({
+          lrp_index,
+          segment_id:   c.segment_id,
+          traversal:    c.traversal,
+          arc_offset_m: c.projection.arc_offset_m,
+          snap_lon:     c.projection.point[0],
+          snap_lat:     c.projection.point[1],
+        });
+      }
+      if (errs.length) return JSON.stringify({ error: errs.join('; ') });
+      await storeActions.setPinnedCandidates(resolved);
+      return JSON.stringify({ ok: true, pinned_count: resolved.length });
+    }
+
+    case 'run_forced_decode': {
+      if (!storeActions) return JSON.stringify({ error: 'Store actions not available.' });
+      const result = await storeActions.runForcedDecodeAndGet();
+      if (!result) return JSON.stringify({ error: 'Not all LRPs pinned. Call set_pinned_candidates first.' });
+      if (!result.ok) return JSON.stringify({ ok: false, error: result.error ?? 'Forced decode failed.' });
+      const segs = result.segments ?? [];
+      const totalLengthM = segs.reduce((s, seg) => s + (seg.length_m ?? 0), 0);
+      const forcedEvents = result.trace?.events ?? [];
+      const legResults = getTraceEvents(forcedEvents, 'DnpChecked').map(d => ({
+        leg:        d.leg,
+        actual_m:   r1(d.actual_m),
+        window_lb:  r1(d.interval?.lb),
+        window_ub:  r1(d.interval?.ub),
+        dnp_passed: d.passed,
+      }));
+      return toonResponse(
+        { ok: true, segment_count: segs.length, path_total_length_m: r1(totalLengthM) },
+        legResults.length
+          ? [{ label: 'legs', rows: legResults, fields: ['leg','actual_m','window_lb','window_ub','dnp_passed'] }]
+          : []
+      );
     }
 
     default:
