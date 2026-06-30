@@ -536,6 +536,7 @@ export default function MapView({ tilesBase, ready }) {
   const traceHighlightSnaps   = useStore(s => s.traceHighlightSnaps);
   const traceLrpFocus         = useStore(s => s.traceLrpFocus);
   const setTraceLrpFocus      = useStore(s => s.setTraceLrpFocus);
+  const mapFlyTo              = useStore(s => s.mapFlyTo);
   const showSegmentLayer      = useStore(s => s.showSegmentLayer);
   const searchRadiusM         = useStore(s => s.params.candidate_search_radius_m);
   const lfrcnpTolerance       = useStore(s => s.params.lfrcnp_tolerance ?? 0);
@@ -1735,6 +1736,15 @@ export default function MapView({ tilesBase, ready }) {
     // Allow re-clicking same LRP by clearing after acting
     setTraceLrpFocus(null);
   }, [traceLrpFocus, setTraceLrpFocus]);
+
+  // ── LLM-requested map fly-to ─────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!mapFlyTo) return;
+    const map = mapRef.current;
+    if (!map) return;
+    map.flyTo({ center: [mapFlyTo.lon, mapFlyTo.lat], zoom: mapFlyTo.zoom, duration: 700 });
+  }, [mapFlyTo]);
 
   // ── LRP bearing cone sync ─────────────────────────────────────────────────────
 

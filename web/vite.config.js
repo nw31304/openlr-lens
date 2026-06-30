@@ -16,6 +16,11 @@ function serveTile(tilesDir, req, res) {
   }
 
   const stat = fs.statSync(filePath);
+  if (stat.isDirectory()) {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
   const corsHeaders = {
     'Access-Control-Allow-Origin':   '*',
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag',

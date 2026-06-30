@@ -7,6 +7,7 @@ export default function ReplayPanel() {
   const replayStep    = useStore(s => s.replayStep);
   const stepReplay    = useStore(s => s.stepReplay);
   const setReplayStep = useStore(s => s.setReplayStep);
+  const traceLevel    = useStore(s => s.params?.trace_level ?? 'Summary');
 
   const total = replaySteps.length;
 
@@ -34,7 +35,6 @@ export default function ReplayPanel() {
   const currentStep = replaySteps[replayStep];
   const pct         = total > 1 ? (replayStep / (total - 1)) * 100 : 0;
   const phases      = replayStats?.phases ?? [];
-  const noAstar     = replayStats?.totalNodes === 0;
 
   return (
     <div className="replay-panel">
@@ -55,9 +55,9 @@ export default function ReplayPanel() {
 
       <div className="replay-status">{describeStep(currentStep)}</div>
 
-      {noAstar && (
+      {traceLevel !== 'Full' && (
         <div className="rp-hint-bar">
-          ⚙ Set <strong>Trace level → Full</strong> and decode again to see A* node expansion
+          Partial replay — A* node expansion map not shown. Switch to <strong>Full</strong> trace and re-decode for complete replay.
         </div>
       )}
 

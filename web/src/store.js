@@ -162,6 +162,7 @@ export const useStore = create(persist(
   traceHighlightSegIds: null,
   traceHighlightSnaps: null,   // { from: [lon,lat], to: [lon,lat] } when highlighting a leg route
   traceLrpFocus: null,
+  mapFlyTo: null,           // { lat, lon, zoom, _tick } — consumed by Map to call map.flyTo()
   candidatePopup: null,
   // ── Replay state ─────────────────────────────────────────────────────────
   replaySteps: [],        // pre-built display steps from buildReplaySteps()
@@ -225,7 +226,18 @@ export const useStore = create(persist(
     // Cap history at 20 entries (~10 exchange pairs) to bound context window growth.
     // The model can re-call tools if it needs data that has aged out.
     const MAX_API_HISTORY = 20;
-    const trimmedHistory = llmApiHistory.slice(-MAX_API_HISTORY);
+    const rawHistory = llmApiHistory.slice(-MAX_API_HISTORY);
+    // Trim to a clean conversation boundary: never start with an orphaned tool result.
+    // A clean start is a plain user message (string content, not a tool-result array).
+    let trimStart = 0;
+    for (let i = 0; i < rawHistory.length; i++) {
+      const m = rawHistory[i];
+      if (m.role === 'user' && typeof m.content === 'string') {
+        trimStart = i;
+        break;
+      }
+    }
+    const trimmedHistory = rawHistory.slice(trimStart);
 
     // apiHistory is the full multi-turn API conversation (includes tool call/result turns)
     let apiHistory = [
@@ -239,7 +251,7 @@ export const useStore = create(persist(
     // Accumulate tool call activity for the strip display
     const toolCalls = [];
 
-    const MAX_STEPS = 8;
+    const MAX_STEPS = 20;
     for (let step = 0; step < MAX_STEPS; step++) {
       const resp = await chatComplete(llmConfig, apiHistory, TOOL_DEFINITIONS);
 
@@ -283,13 +295,16 @@ export const useStore = create(persist(
           await get().runForcedDecode();
           return get().forcedDecodeResult;
         },
+        highlightSegments: (segIds) => get().setTraceHighlight(segIds),
+        flyTo: (lat, lon, zoom) => get().setMapFlyTo(lat, lon, zoom),
       };
 
       for (const tc of resp.tool_calls) {
         let toolResult;
         try {
           const args = JSON.parse(tc.function.arguments);
-          toolResult = await executeTool(tc.function.name, args, { decodeResult, params, decoder: _decoder, storeActions });
+          const forcedDecodeResult = get().forcedDecodeResult;
+          toolResult = await executeTool(tc.function.name, args, { decodeResult, params, decoder: _decoder, storeActions, forcedDecodeResult });
           toolCalls.push({
             label: toolCallLabel(tc.function.name, args),
             args_bytes: tc.function.arguments.length,
@@ -344,6 +359,7 @@ export const useStore = create(persist(
   setCandidatePopup: (data) => set({ candidatePopup: data }),
   clearCandidatePopup: () => set({ candidatePopup: null }),
   setTraceLrpFocus: (lrp) => set({ traceLrpFocus: lrp ? { ...lrp, _tick: Date.now() } : null }),
+  setMapFlyTo: (lat, lon, zoom) => set({ mapFlyTo: { lat, lon, zoom, _tick: Date.now() } }),
 
   setPinnedCandidate: (lrpIdx, snap) => set(state => ({
     pinnedCandidates: { ...state.pinnedCandidates, [lrpIdx]: snap ?? null },
@@ -419,7 +435,28 @@ export const useStore = create(persist(
     const { openlrString, params } = get();
     if (!openlrString.trim() || !_pmtiles || !_decoder) return;
 
-    set({ decoding: true, decodeResult: null, highlightedSegment: null, traceHighlightSegIds: null, candidatePopup: null, llmMessages: [], llmApiHistory: [], llmLoading: false, pinnedCandidates: {}, forcedDecodeResult: null });
+    set({
+      decoding: true,
+      decodeResult: null,
+      // Close all panels and reset transient UI state for the new decode
+      showResult: false,
+      showTrace: false,
+      showReplay: false,
+      showSegmentLayer: false,
+      highlightedSegment: null,
+      traceHighlightSegIds: null,
+      traceHighlightSnaps: null,
+      traceLrpFocus: null,
+      candidatePopup: null,
+      replaySteps: [],
+      replayStats: null,
+      replayStep: 0,
+      pinnedCandidates: {},
+      forcedDecodeResult: null,
+      llmMessages: [],
+      llmApiHistory: [],
+      llmLoading: false,
+    });
     _tileGeomCache = new Map();
     _segIdToTile   = new Map();
     _segGeomCache  = new Map();

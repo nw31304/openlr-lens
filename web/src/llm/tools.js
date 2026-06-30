@@ -175,6 +175,114 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'highlight_segments',
+      description:
+        'Highlight one or more road segments on the map immediately. '
+        + 'Use this to visually direct the user\'s attention to specific segments you are discussing. '
+        + 'Replaces any previous highlight. Pass an empty array to clear.',
+      parameters: {
+        type: 'object',
+        properties: {
+          segment_ids: {
+            type: 'array',
+            items: { type: 'integer' },
+            description: 'Internal segment IDs to highlight (from candidate lists, path breakdowns, or get_segment).',
+          },
+        },
+        required: ['segment_ids'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_map_view',
+      description:
+        'Pan and zoom the map to a specific coordinate. '
+        + 'Use this to focus the user\'s view on the area you are discussing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          lat:  { type: 'number',  description: 'Latitude in decimal degrees.' },
+          lon:  { type: 'number',  description: 'Longitude in decimal degrees.' },
+          zoom: { type: 'number',  description: 'Map zoom level (12–18 typical; 15 for street-level detail, 17 for junction-level).' },
+        },
+        required: ['lat', 'lon', 'zoom'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'focus_lrp',
+      description:
+        'Pan and zoom the map to an LRP coordinate at street-level zoom. '
+        + 'Convenience wrapper around set_map_view — no need to look up coordinates manually.',
+      parameters: {
+        type: 'object',
+        properties: {
+          lrp_index: { type: 'integer', description: 'Zero-based LRP index.' },
+        },
+        required: ['lrp_index'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_astar_skipped_edges',
+      description:
+        'List every edge skipped by A* on a specific leg, with the skip reason. '
+        + 'Requires Full trace level — returns an error if only Summary trace is available. '
+        + 'Optionally filter to a specific segment_id to check whether A* skipped it and why. '
+        + 'Use this to diagnose why a specific road was not used despite being reachable.',
+      parameters: {
+        type: 'object',
+        properties: {
+          leg_index: {
+            type: 'integer',
+            description: 'Zero-based leg index.',
+          },
+          segment_id: {
+            type: 'integer',
+            description: 'Optional: filter to this specific segment. If omitted, returns all skipped edges.',
+          },
+        },
+        required: ['leg_index'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_forced_leg_summary',
+      description:
+        'Routing outcome for one leg of the most recent forced decode: A* stats and DNP validation. '
+        + 'Use this after run_forced_decode fails to diagnose why a specific leg did not route. '
+        + 'Returns an error if no forced decode has been run yet.',
+      parameters: {
+        type: 'object',
+        properties: {
+          leg_index: { type: 'integer', description: 'Zero-based leg index.' },
+        },
+        required: ['leg_index'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_attempted_combinations',
+      description:
+        'List every candidate combination the original decode attempted, with per-combination outcome. '
+        + 'Each row shows which from/to candidates were tried for each leg and whether routing succeeded. '
+        + 'Use this to understand the full search space and identify which combinations were never tried.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'set_pinned_candidates',
       description:
         'Pin one specific accepted candidate per LRP so that run_forced_decode routes through exactly those snap points. '
@@ -278,22 +386,29 @@ function getTraceEvents(events, variant) {
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
 
-// storeActions: { setPinnedCandidates(snapsArray), runForcedDecodeAndGet() → Promise<result> }
-export async function executeTool(name, args, { decodeResult, params, decoder, storeActions }) {
+// storeActions: { setPinnedCandidates, runForcedDecodeAndGet, highlightSegments, flyTo }
+export async function executeTool(name, args, { decodeResult, params, decoder, storeActions, forcedDecodeResult }) {
   if (!decodeResult) return JSON.stringify({ error: 'No decode result available.' });
 
+  // When a forced decode is active, routing tools (leg summary, route segments, skipped edges)
+  // should reflect the forced route, not the original multi-attempt trace.
+  const isForced = !!forcedDecodeResult?.ok;
+  const activeResult = isForced ? forcedDecodeResult : decodeResult;
+  const routingEvents = activeResult.trace?.events ?? [];
+  // Original trace is still needed for candidate tools and attempted-combinations.
   const events = decodeResult.trace?.events ?? [];
 
   switch (name) {
 
     case 'get_decode_summary': {
-      const segs = decodeResult.segments ?? [];
+      const segs = activeResult.segments ?? [];
       const totalLengthM = segs.reduce((sum, s) => sum + (s.length_m ?? 0), 0);
 
       const scalars = {
-        ok:                    decodeResult.ok,
+        ok:                    activeResult.ok,
+        forced_decode_active:  isForced,
         format:                decodeResult.format ?? null,
-        error:                 decodeResult.error  ?? null,
+        error:                 activeResult.error  ?? null,
         segment_count:         segs.length,
         lrp_count:             decodeResult.lrps?.length ?? 0,
         path_total_length_m:   r1(totalLengthM),
@@ -399,7 +514,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
     case 'get_leg_summary': {
       const { leg_index } = args;
       const routing = {};
-      for (const ev of events) {
+      for (const ev of routingEvents) {
         const [type, data] = Object.entries(ev)[0];
         if (data.leg !== leg_index) continue;
         switch (type) {
@@ -440,11 +555,11 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
 
     case 'get_route_segments': {
       const { leg_index } = args;
-      const found = getTraceEvents(events, 'RouteFound');
+      const found = getTraceEvents(routingEvents, 'RouteFound');
       const data = found.find(e => e.leg === leg_index);
       if (!data) return JSON.stringify({ error: `No successful route found for leg ${leg_index}.` });
 
-      const segById = new Map((decodeResult.segments ?? []).map(s => [s.segment_id, s]));
+      const segById = new Map((activeResult.segments ?? []).map(s => [s.segment_id, s]));
       let cumul = 0;
       const segRows = (data.path ?? []).map(id => {
         const info = segById.get(id);
@@ -541,6 +656,119 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
       return toonResponse(
         { lat, lon, radius_m: data.query?.radius_m ?? radius_m, count: segRows.length },
         [{ label: 'segments', rows: segRows, fields: ['seg_id','source_key','frc','fow','direction','length_m','dist_m'] }]
+      );
+    }
+
+    case 'highlight_segments': {
+      const { segment_ids } = args;
+      if (!storeActions) return JSON.stringify({ error: 'Store actions not available.' });
+      storeActions.highlightSegments(segment_ids?.length ? segment_ids : null);
+      return JSON.stringify({ ok: true, highlighted: segment_ids?.length ?? 0 });
+    }
+
+    case 'set_map_view': {
+      const { lat, lon, zoom } = args;
+      if (!storeActions) return JSON.stringify({ error: 'Store actions not available.' });
+      storeActions.flyTo(lat, lon, zoom);
+      return JSON.stringify({ ok: true });
+    }
+
+    case 'focus_lrp': {
+      const { lrp_index } = args;
+      if (!storeActions) return JSON.stringify({ error: 'Store actions not available.' });
+      const lrp = decodeResult.lrps?.[lrp_index];
+      if (!lrp) return JSON.stringify({ error: `LRP ${lrp_index} not found.` });
+      storeActions.flyTo(lrp.lat, lrp.lon, 16);
+      return JSON.stringify({ ok: true, lat: lrp.lat, lon: lrp.lon });
+    }
+
+    case 'get_astar_skipped_edges': {
+      const { leg_index, segment_id } = args;
+      const skipped = getTraceEvents(routingEvents, 'AStarEdgeSkipped').filter(e => e.leg === leg_index);
+      if (!skipped.length) {
+        const hasFullTrace = routingEvents.some(e => e.AStarEdgeSkipped !== undefined || e.AStarNodeExpanded !== undefined);
+        if (!hasFullTrace) return JSON.stringify({ error: 'Full trace required. Set Trace Level → Full and decode again.' });
+        return JSON.stringify({ leg_index, count: 0, note: 'No edges skipped on this leg.' });
+      }
+      const filtered = segment_id != null ? skipped.filter(e => e.segment_id === segment_id) : skipped;
+      const rows = filtered.map(e => {
+        const r = e.reason ?? {};
+        const rKey = typeof r === 'string' ? r : Object.keys(r)[0] ?? 'Unknown';
+        const rData = typeof r === 'object' ? r[rKey] : null;
+        return {
+          seg_id:  e.segment_id,
+          reason:  rKey,
+          seg_frc: rData?.seg_frc ?? null,
+          lfrcnp:  rData?.lfrcnp  ?? null,
+          dist_m:  rData?.distance_m != null ? r1(rData.distance_m) : null,
+          max_m:   rData?.max_m    != null ? r1(rData.max_m)     : null,
+        };
+      });
+      return toonResponse(
+        { leg_index, total_skipped: skipped.length, shown: rows.length },
+        [{ label: 'skipped', rows, fields: ['seg_id','reason','seg_frc','lfrcnp','dist_m','max_m'] }]
+      );
+    }
+
+    case 'get_forced_leg_summary': {
+      const { leg_index } = args;
+      if (!forcedDecodeResult) return JSON.stringify({ error: 'No forced decode result. Call run_forced_decode first.' });
+      const fEvents = forcedDecodeResult.trace?.events ?? [];
+      const routing = {};
+      for (const ev of fEvents) {
+        const [type, data] = Object.entries(ev)[0];
+        if (data.leg !== leg_index) continue;
+        switch (type) {
+          case 'RouteFound':      routing.result = { found: true,  ...data }; break;
+          case 'RouteFailed':     routing.result = { found: false, ...data }; break;
+          case 'DnpChecked':      routing.dnp    = data;                      break;
+          case 'AStarTerminated': routing.astar  = data;                      break;
+          default: break;
+        }
+      }
+      if (!Object.keys(routing).length) return JSON.stringify({ error: `No routing trace for forced leg ${leg_index}.` });
+      const r = routing.result, d = routing.dnp, a = routing.astar;
+      return JSON.stringify({
+        leg_index,
+        route_found:       r?.found ?? null,
+        route_length_m:    r?.found ? r.length_m : null,
+        route_fail_reason: r?.found === false ? r.reason : null,
+        dnp: d ? { actual_m: d.actual_m, window_lb: d.interval?.lb, window_ub: d.interval?.ub, passed: d.passed } : null,
+        astar: a ? {
+          nodes_expanded:          a.nodes_expanded,
+          edges_skipped_frc:       a.edges_skipped_frc,
+          edges_skipped_direction: a.edges_skipped_direction,
+          edges_skipped_turn:      a.edges_skipped_turn,
+          edges_skipped_distance:  a.edges_skipped_distance,
+          reason: a.reason,
+        } : null,
+      });
+    }
+
+    case 'get_attempted_combinations': {
+      const started = getTraceEvents(events, 'RouteSearchStarted');
+      const exhausted = getTraceEvents(events, 'RouteAttemptsExhausted')[0] ?? null;
+      // Group by combination: a new combination starts each time leg resets to 0 (or first event)
+      const combos = [];
+      let current = null;
+      for (const s of started) {
+        if (s.leg === 0 || current === null) { current = { legs: [] }; combos.push(current); }
+        // Find outcome event for this specific leg search (next RouteFound/RouteFailed for this leg after this start)
+        current.legs.push({ leg: s.leg, from_seg: s.from.segment_id, from_trav: s.from.traversal, to_seg: s.to.segment_id, to_trav: s.to.traversal });
+      }
+      // Match outcomes: RouteFound/RouteFailed events per leg
+      const foundEvts  = getTraceEvents(events, 'RouteFound');
+      const failedEvts = getTraceEvents(events, 'RouteFailed');
+      const rows = started.map((s, idx) => {
+        // Find matching outcome by leg — simplified: same leg order in events
+        const rf = foundEvts.find((e, i) => e.leg === s.leg && i === started.slice(0, idx + 1).filter(x => x.leg === s.leg).length - 1);
+        const fail = failedEvts.find((e, i) => e.leg === s.leg && i === started.slice(0, idx + 1).filter(x => x.leg === s.leg).length - 1);
+        const outcome = rf ? `found(${r1(rf.length_m)}m)` : fail ? `failed` : 'incomplete';
+        return { leg: s.leg, from_seg: s.from.segment_id, from_trav: s.from.traversal, to_seg: s.to.segment_id, to_trav: s.to.traversal, outcome };
+      });
+      return toonResponse(
+        { total_attempts: started.length, cap_hit: exhausted != null, cap_limit: exhausted?.limit ?? null },
+        [{ label: 'attempts', rows, fields: ['leg','from_seg','from_trav','to_seg','to_trav','outcome'] }]
       );
     }
 
