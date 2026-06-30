@@ -757,28 +757,77 @@ html, body, #root, .app {
   line-height: 1.6;
 }
 
-.llm-bullet {
-  padding-left: 14px;
-  position: relative;
+.llm-md {
+  font-size: 13px;
+  color: #e8e8f0;
+  line-height: 1.5;
 }
-.llm-bullet::before {
-  content: '–';
-  position: absolute;
-  left: 2px;
-  color: #8899aa;
+.llm-md > * + * { margin-top: 4px; }
+
+.llm-md p { margin: 0 0 5px; }
+.llm-md p:last-child { margin-bottom: 0; }
+
+.llm-md h1, .llm-md h2, .llm-md h3 {
+  font-weight: 600;
+  margin: 10px 0 3px;
+  line-height: 1.3;
+}
+.llm-md h1 { font-size: 14px; color: #b4a0ff; }
+.llm-md h2 { font-size: 13px; color: #b4a0ff; }
+.llm-md h3 { font-size: 12px; color: #a090dd; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.llm-md ul, .llm-md ol { margin: 3px 0; padding-left: 18px; }
+.llm-md li { margin: 2px 0; line-height: 1.4; }
+.llm-md li > ul, .llm-md li > ol { margin: 2px 0; }
+
+.llm-md strong { color: #e8e8f0; font-weight: 600; }
+.llm-md em     { font-style: italic; color: #ccccdd; }
+
+.llm-md hr {
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  margin: 8px 0;
 }
 
-.llm-section-hdr {
+.llm-md blockquote {
+  border-left: 3px solid rgba(180,100,255,0.4);
+  margin: 5px 0;
+  padding: 1px 10px;
+  color: #aaaacc;
+}
+
+.llm-md table { border-collapse: collapse; width: 100%; font-size: 11.5px; margin: 5px 0; }
+.llm-md th    { background: rgba(180,100,255,0.15); color: #c4b8ff; font-weight: 600; padding: 3px 7px; border: 1px solid rgba(255,255,255,0.1); text-align: left; }
+.llm-md td    { padding: 2px 7px; border: 1px solid rgba(255,255,255,0.07); color: #d0d0e0; }
+.llm-md tr:nth-child(even) td { background: rgba(255,255,255,0.03); }
+
+.llm-md-link { color: #7ab8ff; text-decoration: none; }
+.llm-md-link:hover { text-decoration: underline; }
+
+.llm-inline-code {
+  font-family: ui-monospace, 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #cc99ff;
-  margin-top: 6px;
+  background: rgba(180,160,255,0.13);
+  color: #c4b8ff;
+  border-radius: 3px;
+  padding: 1px 4px;
 }
 
-.llm-spacer {
-  height: 4px;
+.llm-pre {
+  background: rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 5px;
+  padding: 8px 11px;
+  overflow-x: auto;
+  margin: 5px 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.llm-code-block-inner {
+  font-family: ui-monospace, 'JetBrains Mono', 'Fira Code', monospace;
+  color: #b8d0ff;
+  background: none;
+  padding: 0;
 }
 
 .llm-diagram {
@@ -792,6 +841,29 @@ html, body, #root, .app {
   display: block;
   max-width: 100%;
   height: auto;
+}
+.llm-diagram-img--zoom { cursor: zoom-in; }
+
+.llm-diagram-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  cursor: zoom-out;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.llm-diagram-expanded {
+  max-width: min(90vw, 1400px);
+  max-height: 88vh;
+  width: auto;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 8px 48px rgba(0, 0, 0, 0.9);
+  cursor: default;
 }
 .llm-diagram-actions {
   display: flex;

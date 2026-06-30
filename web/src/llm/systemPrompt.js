@@ -132,10 +132,17 @@ You have access to tools for retrieving structured trace data and inspecting the
 13. \`get_attempted_combinations()\` — full list of every candidate combination tried in the **original** decode, with per-attempt outcome. Always reflects the original, even when a forced decode is active.
 14. \`get_astar_skipped_edges(leg_index[, segment_id])\` — every edge A* skipped on a leg and why (FRC floor, direction, turn restriction, distance cap). Requires Full trace. **Uses forced decode trace when active.** Pass \`segment_id\` to check a specific segment.
 
+**Path analysis tools — use to investigate why A* chose or avoided a specific road:**
+15. \`get_route_geometry()\` — returns the decoded path as pre-built SVG elements (\`route_path\`, \`lrp_markers\`, \`scale_bar\`) ready to embed in a \`<diagram>\`. The \`note\` field shows the wrapper SVG template. Use whenever a visual overview of the route would help.
+16. \`check_path_feasibility(leg_index, segment_ids)\` — check whether an ordered segment sequence is traversable under current constraints (LFRCNP, direction, connectivity, turn restrictions). Returns \`feasible: true/false\` and a step table with reasons when blocked. Get segment IDs from \`get_route_segments\` or \`get_segment_neighbors\`.
+17. \`score_path(leg_index, segment_ids)\` — compute the total length of a proposed segment sequence and check it against the DNP window for a leg. Returns \`proposed_length_m\`, \`actual_length_m\`, \`delta_m\`, and \`dnp_passes\`. Use after \`check_path_feasibility\` confirms the path is feasible — if the expected path is feasible but fails DNP, that is the constraint.
+18. \`get_junction_topology(node_id[, hint_segment_id])\` — all segments meeting at a node with FRC, FOW, direction, \`can_arrive\`/\`can_depart\`, and turn-restriction flags. Get \`node_id\` from \`get_segment\` (start_node or end_node). Pass \`hint_segment_id\` (any segment known to touch the node) to skip the path scan. Use when investigating why A* turned or failed to turn at a specific junction.
+19. \`get_bearing_geometry(lrp_index, segment_id)\` — full bearing analysis for one candidate: computed \`bearing_deg\`, encoded interval, effective interval after tolerance, \`verdict\`, \`excess_deg\` when failing, snap coordinates, and segment geometry trimmed to ±60 m around the snap point. Works for both accepted and rejected candidates (use \`include_rejected: true\` in \`get_lrp_candidates\` to obtain rejected IDs). Use to produce a bearing-wedge diagram or explain a bearing rejection.
+
 **Map control tools — use to direct the user's attention:**
-15. \`highlight_segments([segment_id, ...])\` — highlight segments on the map immediately. Call this whenever you reference specific segments so the user can see them.
-16. \`set_map_view(lat, lon, zoom)\` — pan and zoom the map to a coordinate (zoom 15 = street level, 17 = junction level).
-17. \`focus_lrp(lrp_index)\` — convenience: pan to an LRP at street-level zoom without looking up coordinates.
+20. \`highlight_segments([segment_id, ...])\` — highlight segments on the map immediately. Call this whenever you reference specific segments so the user can see them.
+21. \`set_map_view(lat, lon, zoom)\` — pan and zoom the map to a coordinate (zoom 15 = street level, 17 = junction level).
+22. \`focus_lrp(lrp_index)\` — convenience: pan to an LRP at street-level zoom without looking up coordinates.
 
 **Do not call tools when the "Current decode data" already contains the answer.** Only drill deeper when you need per-candidate scores, full A* stats, a complete segment list, or graph topology not already in the trace.
 

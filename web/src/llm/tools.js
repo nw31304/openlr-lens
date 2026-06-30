@@ -322,6 +322,123 @@ export const TOOL_DEFINITIONS = [
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'get_route_geometry',
+      description:
+        'Return the decoded path as pre-built SVG elements (route_path, lrp_markers, scale_bar) '
+        + 'for embedding in a <diagram>. The note field shows the wrapper SVG template. '
+        + 'Geometry is subsampled to stay token-efficient. L0=green, last LRP=red, intermediate=orange. '
+        + 'Use whenever you want to show the user a visual overview of the decoded route.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_path_feasibility',
+      description:
+        'Check whether a specific sequence of segments is traversable under the current decode constraints '
+        + '(LFRCNP, direction, turn restrictions, connectivity). Returns feasible: true/false plus, when '
+        + 'blocked, a per-step table with the reason (FrcBelowLfrcnp | NotConnected | WrongDirection | TurnRestriction). '
+        + 'Get segment IDs from get_route_segments or get_segment_neighbors. '
+        + 'Use when investigating why A* did not route via an expected road.',
+      parameters: {
+        type: 'object',
+        properties: {
+          leg_index: {
+            type: 'integer',
+            description: 'Zero-based leg index (determines the LFRCNP constraint).',
+          },
+          segment_ids: {
+            type: 'array',
+            items: { type: 'integer' },
+            description: 'Ordered segment IDs representing the path to check.',
+          },
+        },
+        required: ['leg_index', 'segment_ids'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'score_path',
+      description:
+        'Compute the total length of a proposed segment sequence and compare it against the DNP '
+        + 'validation window for a leg. Returns proposed_length_m, actual_chosen_length_m, delta_m, '
+        + 'and dnp_passes. Use after check_path_feasibility confirms feasibility — if the expected path '
+        + 'is feasible but longer/shorter than the actual path, DNP tolerance may be the constraint.',
+      parameters: {
+        type: 'object',
+        properties: {
+          leg_index: {
+            type: 'integer',
+            description: 'Zero-based leg index (supplies the DNP window).',
+          },
+          segment_ids: {
+            type: 'array',
+            items: { type: 'integer' },
+            description: 'Ordered segment IDs representing the path to score.',
+          },
+        },
+        required: ['leg_index', 'segment_ids'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_junction_topology',
+      description:
+        'Return all segments meeting at a specific node with FRC, FOW, direction, can_arrive/can_depart, '
+        + 'and turn-restriction flags. Get node_id from get_segment (start_node or end_node fields). '
+        + 'Optionally pass hint_segment_id (any segment known to touch this node) to skip the path scan. '
+        + 'Use when investigating why A* turned or failed to turn at a specific junction.',
+      parameters: {
+        type: 'object',
+        properties: {
+          node_id: {
+            type: 'integer',
+            description: 'Internal node ID (from get_segment start_node or end_node).',
+          },
+          hint_segment_id: {
+            type: 'integer',
+            description: 'Optional: any segment that touches this node, for faster lookup.',
+          },
+        },
+        required: ['node_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_bearing_geometry',
+      description:
+        'Full bearing analysis for one candidate at one LRP: computed bearing_deg, encoded interval, '
+        + 'effective interval after tolerance, pass/fail verdict, excess_deg when failing, snap coordinates, '
+        + 'and segment geometry trimmed to ±60 m around the snap point. '
+        + 'Works for both accepted and rejected candidates. '
+        + 'Get segment_id from get_lrp_candidates (pass include_rejected: true for rejected candidates). '
+        + 'Use to produce a bearing-wedge diagram or explain a bearing rejection.',
+      parameters: {
+        type: 'object',
+        properties: {
+          lrp_index: {
+            type: 'integer',
+            description: 'Zero-based LRP index.',
+          },
+          segment_id: {
+            type: 'integer',
+            description: 'Internal segment ID of the candidate to inspect.',
+          },
+        },
+        required: ['lrp_index', 'segment_id'],
+      },
+    },
+  },
 ];
 
 // ── TOON (Token-Oriented Object Notation) helpers ─────────────────────────────
@@ -829,6 +946,341 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
           ? [{ label: 'legs', rows: legResults, fields: ['leg','actual_m','window_lb','window_ub','dnp_passed'] }]
           : []
       );
+    }
+
+    case 'get_route_geometry': {
+      const segs = activeResult.segments ?? [];
+      if (!segs.length) return JSON.stringify({ error: 'No path segments — decode first.' });
+
+      const allPts = segs.flatMap(s => s.geometry ?? []);
+      if (!allPts.length) return JSON.stringify({ error: 'No geometry in path segments.' });
+
+      let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+      for (const [lon, lat] of allPts) {
+        if (lon < minLon) minLon = lon;  if (lon > maxLon) maxLon = lon;
+        if (lat < minLat) minLat = lat;  if (lat > maxLat) maxLat = lat;
+      }
+
+      const W = 540, H = 290, PAD = 28;
+      const lonRange = maxLon - minLon || 0.001;
+      const latRange = maxLat - minLat || 0.001;
+      const midLat   = (minLat + maxLat) / 2;
+      const scale    = Math.min((W - 2 * PAD) / lonRange, (H - 2 * PAD) / latRange);
+      const offX     = PAD + ((W - 2 * PAD) - lonRange * scale) / 2;
+      const offY     = PAD + ((H - 2 * PAD) - latRange * scale) / 2;
+      const project  = (lon, lat) => [
+        Math.round(offX + (lon - minLon) * scale),
+        Math.round(offY + (maxLat - lat) * scale),
+      ];
+
+      const totalPts = allPts.length;
+      const step = totalPts > 400 ? Math.ceil(totalPts / 400) : 1;
+
+      let pathD = '';
+      let gIdx = 0;
+      for (const seg of segs) {
+        const geom = seg.geometry ?? [];
+        for (let i = 0; i < geom.length; i++, gIdx++) {
+          if (i > 0 && gIdx % step !== 0 && i !== geom.length - 1) continue;
+          const [x, y] = project(geom[i][0], geom[i][1]);
+          pathD += (pathD === '' ? `M${x},${y}` : `L${x},${y}`);
+        }
+      }
+
+      const lrpMarkers = (decodeResult.lrps ?? []).map((l, i) => {
+        if (l.snap_lon == null) return '';
+        const [x, y] = project(l.snap_lon, l.snap_lat);
+        const isLast = i === decodeResult.lrps.length - 1;
+        const fill = i === 0 ? '#4caf50' : isLast ? '#f44336' : '#ff9800';
+        return `<circle cx="${x}" cy="${y}" r="5" fill="${fill}" stroke="#fff" stroke-width="1.5"/>`
+          + `<text x="${x}" y="${y - 8}" text-anchor="middle" fill="${fill}" font-size="9" font-family="sans-serif">L${i}</text>`;
+      }).join('');
+
+      const metersPerLonDeg = 111320 * Math.cos(midLat * Math.PI / 180);
+      const pixPerMeter     = scale / metersPerLonDeg;
+      const rawBarM         = 80 / pixPerMeter;
+      const exp             = Math.floor(Math.log10(rawBarM));
+      const mantissa        = rawBarM / Math.pow(10, exp);
+      const niceMantissa    = mantissa < 1.5 ? 1 : mantissa < 3.5 ? 2 : 5;
+      const barM            = niceMantissa * Math.pow(10, exp);
+      const barPx           = Math.round(barM * pixPerMeter);
+      const bx = W - PAD, by = H - 12;
+      const barLabel = barM >= 1000 ? `${barM / 1000} km` : `${barM} m`;
+      const scaleBar = `<line x1="${bx - barPx}" y1="${by}" x2="${bx}" y2="${by}" stroke="#777" stroke-width="1.5"/>`
+        + `<line x1="${bx - barPx}" y1="${by - 3}" x2="${bx - barPx}" y2="${by + 3}" stroke="#777" stroke-width="1.5"/>`
+        + `<line x1="${bx}" y1="${by - 3}" x2="${bx}" y2="${by + 3}" stroke="#777" stroke-width="1.5"/>`
+        + `<text x="${bx - barPx / 2}" y="${by - 5}" text-anchor="middle" fill="#777" font-size="9" font-family="sans-serif">${barLabel}</text>`;
+
+      return JSON.stringify({
+        width: W, height: H,
+        route_path:  `<path d="${pathD}" stroke="#4aaa88" stroke-width="2" fill="none"/>`,
+        lrp_markers: lrpMarkers,
+        scale_bar:   scaleBar,
+        note:        `Wrap in: <svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg"><rect width="${W}" height="${H}" fill="#111"/>…route_path…lrp_markers…scale_bar…</svg>`,
+      });
+    }
+
+    case 'check_path_feasibility': {
+      const { leg_index, segment_ids } = args;
+      if (!Array.isArray(segment_ids) || segment_ids.length === 0)
+        return JSON.stringify({ error: 'segment_ids must be a non-empty array.' });
+      if (!decoder) return JSON.stringify({ error: 'Decoder not available.' });
+
+      const lrp = decodeResult.lrps?.[leg_index];
+      if (!lrp) return JSON.stringify({ error: `No LRP at index ${leg_index}.` });
+
+      const lfrcnp = (lrp.lfrcnp ?? 7) + (params?.lfrcnp_tolerance ?? 0);
+      const segData = segment_ids.map(id => JSON.parse(decoder.get_segment(id)));
+
+      const rows = [];
+      let feasible = true;
+
+      // Check first segment's LFRCNP
+      const first = segData[0];
+      if (first?.error) {
+        rows.push({ step: 0, from_seg: 'entry', to_seg: segment_ids[0], node: null, status: 'error', reason: 'SegmentNotLoaded' });
+        feasible = false;
+      } else if (first?.frc > lfrcnp) {
+        rows.push({ step: 0, from_seg: 'entry', to_seg: segment_ids[0], node: null, status: 'blocked', reason: `FrcBelowLfrcnp:FRC${first.frc}>LFRCNP${lfrcnp}` });
+        feasible = false;
+      }
+
+      for (let i = 0; i < segment_ids.length - 1; i++) {
+        const a = segData[i], b = segData[i + 1];
+        const aId = segment_ids[i], bId = segment_ids[i + 1];
+
+        if (a?.error || b?.error) {
+          rows.push({ step: i + 1, from_seg: aId, to_seg: bId, node: null, status: 'error', reason: 'SegmentNotLoaded' });
+          feasible = false;
+          continue;
+        }
+
+        if (b.frc > lfrcnp) {
+          rows.push({ step: i + 1, from_seg: aId, to_seg: bId, node: null, status: 'blocked', reason: `FrcBelowLfrcnp:FRC${b.frc}>LFRCNP${lfrcnp}` });
+          feasible = false;
+          continue;
+        }
+
+        // Find shared node
+        let sharedNode = null, aExitEnd = null;
+        if      (a.end_node   === b.start_node) { sharedNode = a.end_node;   aExitEnd = 'end'; }
+        else if (a.end_node   === b.end_node)   { sharedNode = a.end_node;   aExitEnd = 'end'; }
+        else if (a.start_node === b.start_node) { sharedNode = a.start_node; aExitEnd = 'start'; }
+        else if (a.start_node === b.end_node)   { sharedNode = a.start_node; aExitEnd = 'start'; }
+
+        if (!sharedNode) {
+          rows.push({ step: i + 1, from_seg: aId, to_seg: bId, node: null, status: 'blocked', reason: 'NotConnected' });
+          feasible = false;
+          continue;
+        }
+
+        const aCanExit  = a.direction === 'Both'
+          || (a.direction === 'Forward'  && aExitEnd === 'end')
+          || (a.direction === 'Backward' && aExitEnd === 'start');
+
+        if (!aCanExit) {
+          rows.push({ step: i + 1, from_seg: aId, to_seg: bId, node: sharedNode, status: 'blocked', reason: `WrongDirection:${aId}(${a.direction})cannotExit` });
+          feasible = false;
+          continue;
+        }
+
+        const bEnterEnd = sharedNode === b.start_node ? 'start' : 'end';
+        const bCanEnter = b.direction === 'Both'
+          || (b.direction === 'Forward'  && bEnterEnd === 'start')
+          || (b.direction === 'Backward' && bEnterEnd === 'end');
+
+        if (!bCanEnter) {
+          rows.push({ step: i + 1, from_seg: aId, to_seg: bId, node: sharedNode, status: 'blocked', reason: `WrongDirection:${bId}(${b.direction})cannotEnter` });
+          feasible = false;
+          continue;
+        }
+
+        const nbr       = JSON.parse(decoder.get_segment_neighbors(aId));
+        const nodeGroup = aExitEnd === 'start' ? nbr.start_node : nbr.end_node;
+        const nbrEntry  = (nodeGroup?.segments ?? []).find(s => s.segment_id === bId);
+        if (nbrEntry?.restricted_from_self) {
+          rows.push({ step: i + 1, from_seg: aId, to_seg: bId, node: sharedNode, status: 'blocked', reason: 'TurnRestriction' });
+          feasible = false;
+          continue;
+        }
+
+        rows.push({ step: i + 1, from_seg: aId, to_seg: bId, node: sharedNode, status: 'ok', reason: null });
+      }
+
+      const fb = rows.find(r => r.status === 'blocked');
+      return toonResponse(
+        { leg_index, lfrcnp_effective: lfrcnp, segment_count: segment_ids.length, feasible, first_blockage: fb ? `${fb.reason} at step ${fb.step}` : null },
+        rows.length ? [{ label: 'steps', rows, fields: ['step','from_seg','to_seg','node','status','reason'] }] : []
+      );
+    }
+
+    case 'score_path': {
+      const { leg_index, segment_ids } = args;
+      if (!Array.isArray(segment_ids) || segment_ids.length === 0)
+        return JSON.stringify({ error: 'segment_ids must be a non-empty array.' });
+      if (!decoder) return JSON.stringify({ error: 'Decoder not available.' });
+
+      const lrp = decodeResult.lrps?.[leg_index];
+      if (!lrp) return JSON.stringify({ error: `No LRP at index ${leg_index}.` });
+
+      const routeFoundEvt = getTraceEvents(routingEvents, 'RouteFound').find(e => e.leg === leg_index);
+      const actualLengthM = routeFoundEvt?.length_m ?? null;
+
+      const dnpEvt  = getTraceEvents(routingEvents, 'DnpChecked').find(e => e.leg === leg_index);
+      const windowLb = dnpEvt?.interval?.lb ?? null;
+      const windowUb = dnpEvt?.interval?.ub ?? null;
+
+      let totalLength = 0;
+      const segRows = [];
+      for (const seg_id of segment_ids) {
+        const s = JSON.parse(decoder.get_segment(seg_id));
+        if (s.error) { segRows.push({ seg_id, source_key: null, frc: null, length_m: null }); continue; }
+        const len = s.length_m ?? 0;
+        totalLength += len;
+        segRows.push({ seg_id, source_key: s.source_key ?? null, frc: s.frc, length_m: r1(len) });
+      }
+
+      const dnpPasses = windowLb != null ? totalLength >= windowLb && totalLength <= windowUb : null;
+
+      return toonResponse(
+        {
+          leg_index,
+          proposed_length_m:  r1(totalLength),
+          actual_length_m:    r1(actualLengthM),
+          delta_m:            actualLengthM != null ? r1(totalLength - actualLengthM) : null,
+          dnp_window:         windowLb != null ? `[${r1(windowLb)},${r1(windowUb)}]` : null,
+          dnp_raw_encoded:    lrp.dnp_lb != null ? `[${r1(lrp.dnp_lb)},${r1(lrp.dnp_ub ?? lrp.dnp_lb)}]` : null,
+          dnp_passes:         dnpPasses,
+        },
+        [{ label: 'segments', rows: segRows, fields: ['seg_id','source_key','frc','length_m'] }]
+      );
+    }
+
+    case 'get_junction_topology': {
+      const { node_id, hint_segment_id } = args;
+      if (!decoder) return JSON.stringify({ error: 'Decoder not available.' });
+
+      // Resolve a segment that touches node_id
+      let hintId = hint_segment_id ?? null;
+      if (!hintId) {
+        // Scan the decoded route path for a touching segment (cap at 60 to limit WASM calls)
+        const pathSegs  = getTraceEvents(routingEvents, 'RouteFound').flatMap(e => e.path ?? []);
+        const knownSegs = (activeResult.segments ?? []).map(s => s.segment_id).filter(Boolean);
+        const candidates = [...new Set([...pathSegs, ...knownSegs])].slice(0, 60);
+        for (const sid of candidates) {
+          const s = JSON.parse(decoder.get_segment(sid));
+          if (s.start_node === node_id || s.end_node === node_id) { hintId = sid; break; }
+        }
+      }
+
+      if (!hintId) {
+        return JSON.stringify({
+          error: `No loaded segment found touching node ${node_id}. Pass hint_segment_id (any segment ID known to touch this node) to bypass the scan.`,
+        });
+      }
+
+      const hintSeg = JSON.parse(decoder.get_segment(hintId));
+      if (hintSeg.error) return JSON.stringify({ error: hintSeg.error });
+      if (hintSeg.start_node !== node_id && hintSeg.end_node !== node_id)
+        return JSON.stringify({ error: `hint_segment_id ${hintId} does not touch node ${node_id}.` });
+
+      const isAtStart = hintSeg.start_node === node_id;
+      const nbr       = JSON.parse(decoder.get_segment_neighbors(hintId));
+      if (nbr.error) return JSON.stringify({ error: nbr.error });
+
+      const nodeGroup = isAtStart ? nbr.start_node : nbr.end_node;
+      const geom      = hintSeg.geometry ?? [];
+      const nodeCoord = isAtStart ? geom[0] : geom[geom.length - 1];
+
+      const fields = ['seg_id','source_key','frc','fow','direction','length_m','can_arrive','can_depart','restricted_from_self','restricted_into_self'];
+      const rows = (nodeGroup?.segments ?? []).map(s => ({
+        seg_id:               s.segment_id,
+        source_key:           s.source_key ?? null,
+        frc:                  s.frc,
+        fow:                  s.fow,
+        direction:            s.direction,
+        length_m:             r1(s.length_m),
+        can_arrive:           s.can_arrive,
+        can_depart:           s.can_depart,
+        restricted_from_self: s.restricted_from_self ?? false,
+        restricted_into_self: s.restricted_into_self ?? false,
+      }));
+
+      return toonResponse(
+        { node_id, node_lon: nodeCoord ? r3(nodeCoord[0]) : null, node_lat: nodeCoord ? r3(nodeCoord[1]) : null, segment_count: rows.length },
+        rows.length ? [{ label: 'segments', rows, fields }] : []
+      );
+    }
+
+    case 'get_bearing_geometry': {
+      const { lrp_index, segment_id } = args;
+      if (!decoder) return JSON.stringify({ error: 'Decoder not available.' });
+
+      const lrp = decodeResult.lrps?.[lrp_index];
+      if (!lrp) return JSON.stringify({ error: `No LRP at index ${lrp_index}.` });
+
+      const rankedEvent = getTraceEvents(events, 'CandidatesRanked').find(e => e.lrp_idx === lrp_index);
+      if (!rankedEvent) return JSON.stringify({ error: `No candidate trace data for LRP ${lrp_index}. Ensure trace level is Summary or Full.` });
+
+      const accepted   = rankedEvent.accepted ?? [];
+      const rejected   = rankedEvent.rejected ?? [];
+      const candidate  = accepted.find(c => c.segment_id === segment_id)
+        ?? rejected.find(c => c.segment_id === segment_id);
+      if (!candidate) return JSON.stringify({ error: `Segment ${segment_id} not found as a candidate for LRP ${lrp_index}.` });
+
+      const isAccepted  = accepted.some(c => c.segment_id === segment_id);
+      const proj        = candidate.projection ?? {};
+      const arcOffsetM  = proj.arc_offset_m ?? 0;
+      const snapPt      = proj.point ?? [null, null];
+      const bearingDeg  = proj.bearing_deg ?? null;
+
+      const segRaw = decoder.get_segment(segment_id);
+      const segData = JSON.parse(segRaw);
+      if (segData.error) return JSON.stringify({ error: segData.error });
+
+      // Trim geometry to ±60 m around the snap point
+      const geom = segData.geometry ?? [];
+      const windowGeom = [];
+      let cumDist = 0;
+      for (let i = 0; i < geom.length; i++) {
+        if (i > 0) {
+          const lat = (geom[i][1] + geom[i - 1][1]) / 2;
+          const dx  = (geom[i][0] - geom[i - 1][0]) * 111320 * Math.cos(lat * Math.PI / 180);
+          const dy  = (geom[i][1] - geom[i - 1][1]) * 111320;
+          cumDist  += Math.sqrt(dx * dx + dy * dy);
+        }
+        if (Math.abs(cumDist - arcOffsetM) <= 60) windowGeom.push([r3(geom[i][0]), r3(geom[i][1])]);
+      }
+      if (!windowGeom.length) geom.slice(0, 5).forEach(p => windowGeom.push([r3(p[0]), r3(p[1])]));
+
+      const bearingLb = lrp.bearing_lb ?? 0;
+      const bearingUb = lrp.bearing_ub ?? 360;
+      const bearingTol = params?.max_bearing_deviation_deg ?? 0;
+      // Normalise to [0,360)
+      const norm = v => ((v % 360) + 360) % 360;
+      const effectiveLb = norm(bearingLb - bearingTol);
+      const effectiveUb = norm(bearingUb + bearingTol);
+
+      const { verdict, excess } = parseVerdict(candidate.verdict);
+
+      return JSON.stringify({
+        lrp_index,
+        segment_id,
+        source_key:           segData.source_key ?? null,
+        accepted:             isAccepted,
+        verdict,
+        excess_deg:           excess,
+        bearing_deg:          r1(bearingDeg),
+        encoded_lb:           r1(bearingLb),
+        encoded_ub:           r1(bearingUb),
+        tolerance_deg:        bearingTol,
+        effective_lb:         r1(effectiveLb),
+        effective_ub:         r1(effectiveUb),
+        snap_lon:             r3(snapPt[0]),
+        snap_lat:             r3(snapPt[1]),
+        arc_offset_m:         r1(arcOffsetM),
+        window_geometry:      windowGeom,
+      });
     }
 
     default:

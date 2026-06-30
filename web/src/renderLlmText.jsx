@@ -1,30 +1,20 @@
-import React, { useState } from 'react';
-
-function renderInline(text) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((p, i) =>
-    p.startsWith('**') && p.endsWith('**')
-      ? <strong key={i}>{p.slice(2, -2)}</strong>
-      : p
-  );
-}
-
-function renderLine(line, key) {
-  const trimmed = line.trimStart();
-  if (trimmed.startsWith('- ') || trimmed.startsWith('• ')) {
-    return <div key={key} className="llm-bullet">{renderInline(trimmed.slice(2))}</div>;
-  }
-  if (/^[A-Z][^:]{0,30}:\s*$/.test(trimmed)) {
-    return <div key={key} className="llm-section-hdr">{trimmed.replace(/:$/, '')}</div>;
-  }
-  if (!trimmed) return <div key={key} className="llm-spacer" />;
-  return <div key={key}>{renderInline(line)}</div>;
-}
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 function DiagramBlock({ svg, index }) {
-  const [copied, setCopied] = useState(false);
+  const [copied,   setCopied]   = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e) => { if (e.key === 'Escape') setExpanded(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded]);
 
   const copySvg = () => {
     navigator.clipboard.writeText(svg).catch(() => {});
@@ -51,32 +41,80 @@ function DiagramBlock({ svg, index }) {
   };
 
   return (
-    <div className="llm-diagram">
-      <img src={dataUrl} alt="Diagram" className="llm-diagram-img" />
-      <div className="llm-diagram-actions">
-        <button className="llm-diagram-btn" onClick={copySvg} title="Copy SVG source">
-          {copied ? '✓ Copied' : '⎘ SVG'}
-        </button>
-        <button className="llm-diagram-btn" onClick={exportPng} title="Download as PNG">
-          ↓ PNG
-        </button>
+    <>
+      <div className="llm-diagram">
+        <img
+          src={dataUrl}
+          alt="Diagram"
+          className="llm-diagram-img llm-diagram-img--zoom"
+          onClick={() => setExpanded(true)}
+          title="Click to expand"
+        />
+        <div className="llm-diagram-actions">
+          <button className="llm-diagram-btn" onClick={() => setExpanded(true)} title="Expand diagram">
+            ⤢ Expand
+          </button>
+          <button className="llm-diagram-btn" onClick={copySvg} title="Copy SVG source">
+            {copied ? '✓ Copied' : '⎘ SVG'}
+          </button>
+          <button className="llm-diagram-btn" onClick={exportPng} title="Download as PNG">
+            ↓ PNG
+          </button>
+        </div>
       </div>
-    </div>
+
+      {/* Portal to document.body so backdrop-filter on the chat panel doesn't trap the overlay */}
+      {expanded && createPortal(
+        <div className="llm-diagram-overlay" onClick={() => setExpanded(false)}>
+          <img
+            src={dataUrl}
+            alt="Diagram (expanded)"
+            className="llm-diagram-expanded"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
+
+const MD_COMPONENTS = {
+  a({ href, children }) {
+    return <a href={href} target="_blank" rel="noopener noreferrer" className="llm-md-link">{children}</a>;
+  },
+  pre({ children }) {
+    return <pre className="llm-pre">{children}</pre>;
+  },
+  code({ className, children }) {
+    const text = String(children);
+    if (className || text.includes('\n')) {
+      return <code className={`llm-code-block-inner${className ? ` ${className}` : ''}`}>{text.replace(/\n$/, '')}</code>;
+    }
+    return <code className="llm-inline-code">{children}</code>;
+  },
+};
+
+const DIAGRAM_RE = /(<diagram>[\s\S]*?<\/diagram>)/;
 
 export function renderLlmText(text) {
   if (!text) return null;
 
-  // Split on <diagram>...</diagram> blocks (may be multiline)
-  const parts = text.split(/(<diagram>[\s\S]*?<\/diagram>)/);
+  const parts = text.split(DIAGRAM_RE);
   let diagIdx = 0;
 
-  return parts.flatMap((part, i) => {
+  return parts.map((part, i) => {
     if (part.startsWith('<diagram>') && part.endsWith('</diagram>')) {
       const svg = part.slice('<diagram>'.length, -'</diagram>'.length).trim();
-      return [<DiagramBlock key={`diag-${i}`} svg={svg} index={diagIdx++} />];
+      return <DiagramBlock key={`diag-${i}`} svg={svg} index={diagIdx++} />;
     }
-    return part.split('\n').map((line, j) => renderLine(line, `${i}-${j}`));
-  });
+    if (!part.trim()) return null;
+    return (
+      <div key={`md-${i}`} className="llm-md">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+          {part}
+        </ReactMarkdown>
+      </div>
+    );
+  }).filter(Boolean);
 }
