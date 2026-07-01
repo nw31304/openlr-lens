@@ -259,7 +259,7 @@ pub fn decode(
 
     let (path, total_path_m, winning_indices): (Vec<SegmentId>, f64, Vec<usize>) = match route_result {
         Some(r) => r,
-        None => return Err(DecodeFailure { error: DecodeError::AllCombinationsFailed(deepest_failed_leg), trace }),
+        None => return Err(DecodeFailure { error: DecodeError::AllCombinationsFailed(deepest_failed_leg + 1), trace }),
     };
 
     // ── 3. Offsets ──────────────────────────────────────────────────────────
@@ -577,7 +577,7 @@ pub fn decode_forced(
     let (path, total_path_m) = match route_result {
         Some(r) => r,
         None => return Err(DecodeFailure {
-            error: DecodeError::AllCombinationsFailed(deepest_failed_leg),
+            error: DecodeError::AllCombinationsFailed(deepest_failed_leg + 1),
             trace,
         }),
     };

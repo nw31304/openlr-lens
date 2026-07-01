@@ -462,6 +462,13 @@ html, body, #root, .app {
 }
 .ref-help:hover { background: #383858; color: #9999bb; }
 
+.ref-offset-note {
+  font-size: 10px;
+  color: #7777aa;
+  font-style: italic;
+  padding: 2px 0 0 4px;
+}
+
 .lrp-card {
   margin: 4px 8px 0;
   border: 1px solid #1e1e34;

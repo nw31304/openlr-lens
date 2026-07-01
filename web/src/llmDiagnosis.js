@@ -111,7 +111,7 @@ export function buildDiagnosticPrompt(decodeResult, params) {
       dnpStr && !isLast ? `dnp=${dnpStr}` : null,
     ].filter(Boolean).join('  ');
 
-    lines.push(`LRP ${i}${isLast ? ' [last]' : ''}  ${l.lat.toFixed(5)},${l.lon.toFixed(5)}`);
+    lines.push(`LRP ${i + 1}${isLast ? ' [last]' : ''}  ${l.lat.toFixed(5)},${l.lon.toFixed(5)}`);
     lines.push(`  ${attrs}`);
 
     const cands = candidates[i];
@@ -186,20 +186,23 @@ export function buildDiagnosticPrompt(decodeResult, params) {
       const t = info.astar;
       const totalSkipped = (t.edges_skipped_frc ?? 0) + (t.edges_skipped_direction ?? 0) +
                            (t.edges_skipped_turn ?? 0) + (t.edges_skipped_distance ?? 0);
+      const legNum = Number(leg) + 1;
       if (t.edges_skipped_frc > 0 && t.edges_skipped_frc >= (t.nodes_expanded ?? 0)) {
-        signals.push(`Leg ${leg}: FRC skips (${t.edges_skipped_frc}) >= nodes expanded (${t.nodes_expanded ?? 0}) — LFRCNP floor is blocking the search`);
+        signals.push(`Leg ${legNum}: FRC skips (${t.edges_skipped_frc}) >= nodes expanded (${t.nodes_expanded ?? 0}) — LFRCNP floor is blocking the search`);
       } else if (t.edges_skipped_frc > 0) {
-        signals.push(`Leg ${leg}: ${t.edges_skipped_frc} of ${totalSkipped} total skipped edges were due to LFRCNP floor`);
+        signals.push(`Leg ${legNum}: ${t.edges_skipped_frc} of ${totalSkipped} total skipped edges were due to LFRCNP floor`);
       }
       if ((t.nodes_expanded ?? 0) < 10 && !info.result?.found) {
-        signals.push(`Leg ${leg}: only ${t.nodes_expanded ?? 0} nodes expanded before failure — graph is nearly disconnected at current LFRCNP`);
+        signals.push(`Leg ${legNum}: only ${t.nodes_expanded ?? 0} nodes expanded before failure — graph is nearly disconnected at current LFRCNP`);
       }
     }
     if (info.dnp && !info.dnp.passed) {
-      signals.push(`Leg ${leg}: DNP check FAILED — actual ${info.dnp.actual_m?.toFixed(0)}m outside window [${Math.max(0, info.dnp.interval?.lb ?? 0).toFixed(0)}, ${(info.dnp.interval?.ub ?? 0).toFixed(0)}]m`);
+      const legNum = Number(leg) + 1;
+      signals.push(`Leg ${legNum}: DNP check FAILED — actual ${info.dnp.actual_m?.toFixed(0)}m outside window [${Math.max(0, info.dnp.interval?.lb ?? 0).toFixed(0)}, ${(info.dnp.interval?.ub ?? 0).toFixed(0)}]m`);
     }
     if (info.dnp?.passed && info.dnp.actual_m != null && info.dnp.actual_m < 10) {
-      signals.push(`Leg ${leg}: routed path is only ${info.dnp.actual_m.toFixed(1)}m — both LRP anchors likely snapped to the same map location (missing connector segment in decoding map)`);
+      const legNum = Number(leg) + 1;
+      signals.push(`Leg ${legNum}: routed path is only ${info.dnp.actual_m.toFixed(1)}m — both LRP anchors likely snapped to the same map location (missing connector segment in decoding map)`);
     }
   }
 
@@ -231,7 +234,7 @@ export function buildDiagnosticPrompt(decodeResult, params) {
     if (!a || !b) continue;
     const dist = haversineM(a.lat, a.lon, b.lat, b.lon);
     if (dist < 25) {
-      signals.push(`LRP ${i} and LRP ${i + 1} are only ${dist.toFixed(1)}m apart in encoded coordinates — risk of same-point snapping`);
+      signals.push(`LRP ${i + 1} and LRP ${i + 2} are only ${dist.toFixed(1)}m apart in encoded coordinates — risk of same-point snapping`);
     }
   }
 

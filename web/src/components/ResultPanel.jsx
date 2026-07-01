@@ -62,8 +62,17 @@ function RefRow({ label, value, helpKey }) {
   );
 }
 
+function fmtOffsetValue(lb, ub, approximate) {
+  if (lb == null || ub == null) return null;
+  const str = Math.abs(ub - lb) < 0.1
+    ? `${lb.toFixed(0)} m`
+    : `${lb.toFixed(0)}–${ub.toFixed(0)} m`;
+  return approximate ? `${str} *` : str;
+}
+
 function ReferenceSection({ decodeResult, onLrpClick }) {
-  const { format, location_type, lrps, pos_offset_lb, pos_offset_ub, neg_offset_lb, neg_offset_ub } = decodeResult;
+  const { format, location_type, lrps, pos_offset_lb, pos_offset_ub,
+          neg_offset_lb, neg_offset_ub, offsets_approximate } = decodeResult;
   const isV3  = format === 'TomTomV3';
   const hasPos = pos_offset_ub > 0;
   const hasNeg = neg_offset_ub > 0;
@@ -77,9 +86,10 @@ function ReferenceSection({ decodeResult, onLrpClick }) {
         <RefRow label="LRPs"   value={lrps.length} />
         {(hasPos || hasNeg) && <>
           {hasPos && <RefRow label="Pos. offset" helpKey="offset"
-            value={fmtInterval(pos_offset_lb, pos_offset_ub)} />}
+            value={fmtOffsetValue(pos_offset_lb, pos_offset_ub, offsets_approximate)} />}
           {hasNeg && <RefRow label="Neg. offset" helpKey="offset"
-            value={fmtInterval(neg_offset_lb, neg_offset_ub)} />}
+            value={fmtOffsetValue(neg_offset_lb, neg_offset_ub, offsets_approximate)} />}
+          {offsets_approximate && <div className="ref-offset-note">* estimated from DNP sum — exact value depends on actual path length</div>}
         </>}
       </RefSect>
 

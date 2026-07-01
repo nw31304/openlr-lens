@@ -204,20 +204,22 @@ function fmtDnp(lb, ub) {
   return Math.abs(ub - lb) < 0.1 ? `${lb.toFixed(1)} m` : `[${lb.toFixed(1)}, ${ub.toFixed(1)}] m`;
 }
 
-function fmtOffset(lb, ub) {
+function fmtOffset(lb, ub, approximate) {
   if (!lb && !ub) return null;
-  return Math.abs(ub - lb) < 0.1 ? `${lb.toFixed(1)} m` : `[${lb.toFixed(1)}, ${ub.toFixed(1)}] m`;
+  const str = Math.abs(ub - lb) < 0.1 ? `${lb.toFixed(1)} m` : `[${lb.toFixed(1)}, ${ub.toFixed(1)}] m`;
+  return approximate ? `${str} *` : str;
 }
 
 function buildRefSummary(openlrString, lrps, decodeResult) {
   const fmtLabel = decodeResult?.format === 'TomTomV3' ? 'TomTom v3'
                  : decodeResult?.format === 'Tpeg'     ? 'TPEG-OLR'
                  : '(unknown)';
+  const approx = decodeResult?.offsets_approximate;
   const lines = ['{'];
   lines.push(`  "format": "${fmtLabel}",`);
   lines.push(`  "string": "${openlrString}",`);
-  const posOff = fmtOffset(decodeResult?.pos_offset_lb, decodeResult?.pos_offset_ub);
-  const negOff = fmtOffset(decodeResult?.neg_offset_lb, decodeResult?.neg_offset_ub);
+  const posOff = fmtOffset(decodeResult?.pos_offset_lb, decodeResult?.pos_offset_ub, approx);
+  const negOff = fmtOffset(decodeResult?.neg_offset_lb, decodeResult?.neg_offset_ub, approx);
   if (posOff) lines.push(`  "pos_offset": ${posOff},`);
   if (negOff) lines.push(`  "neg_offset": ${negOff},`);
   lines.push(`  "lrps": [`);
@@ -609,8 +611,8 @@ function ResultSection({ decodeResult }) {
       <div className={`tp-row ${decodeResult.ok ? 'tp-ok' : 'tp-err'}`}>
         {decodeResult.ok ? '✓ Decoded' : '✗ Failed'}
         {decodeResult.ok && ` · ${decodeResult.segments?.length ?? 0} segment${decodeResult.segments?.length !== 1 ? 's' : ''}`}
-        {decodeResult.ok && decodeResult.pos_offset_ub > 0 && ` · +[${decodeResult.pos_offset_lb?.toFixed(1)}, ${decodeResult.pos_offset_ub?.toFixed(1)}] m`}
-        {decodeResult.ok && decodeResult.neg_offset_ub > 0 && ` · −[${decodeResult.neg_offset_lb?.toFixed(1)}, ${decodeResult.neg_offset_ub?.toFixed(1)}] m`}
+        {decodeResult.pos_offset_ub > 0 && ` · +[${decodeResult.pos_offset_lb?.toFixed(1)}, ${decodeResult.pos_offset_ub?.toFixed(1)}] m${decodeResult.offsets_approximate ? ' *' : ''}`}
+        {decodeResult.neg_offset_ub > 0 && ` · −[${decodeResult.neg_offset_lb?.toFixed(1)}, ${decodeResult.neg_offset_ub?.toFixed(1)}] m${decodeResult.offsets_approximate ? ' *' : ''}`}
       </div>
       {!decodeResult.ok && decodeResult.error && (
         <div className="tp-err tp-row">{decodeResult.error}</div>

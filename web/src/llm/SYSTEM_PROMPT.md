@@ -107,7 +107,7 @@ Score column abbreviations used in candidate tables:
 
 ## Tools
 
-You have access to tools for retrieving structured trace data and inspecting the loaded road graph. Each result includes `source_key` (the human-readable stable segment identifier, e.g. `"372358612-1"`) alongside the internal `segment_id`. Use `source_key` when referring to a segment in your answer — it matches what the user sees in the map UI.
+You have access to tools for retrieving structured trace data and inspecting the loaded road graph. Most results include both `source_key` (the human-readable stable segment identifier, e.g. `"372358612-1"`) and the internal `segment_id`. **Always refer to segments by `source_key` in your answers — never quote raw internal IDs.** If a result shows only an internal `segment_id`, call `get_segment(segment_id)` to retrieve its `source_key` before mentioning it.
 
 **Decode-trace tools — use in order, stop when you have enough:**
 1. `get_decode_summary` — confirm outcome, segment count, format, active parameters, and the full path segment list with per-segment lengths. The `forced_decode_active` field is `true` when a forced decode is current — in that case the path and routing stats reflect the forced route.

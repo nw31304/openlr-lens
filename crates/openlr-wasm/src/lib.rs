@@ -161,6 +161,10 @@ struct DecodeResult {
     /// [LB, UB] of the negative offset interval. Both 0 when no neg offset.
     neg_offset_lb: f64,
     neg_offset_ub: f64,
+    /// True when offset bounds were estimated from DNP sum (decode failed, path length unknown).
+    /// False when exact (decode succeeded and actual path length was used).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    offsets_approximate: bool,
     /// Conservative WKT trimmed at LB (maximal coverage). Used by the copy button.
     #[serde(skip_serializing_if = "Option::is_none")]
     conservative_wkt: Option<String>,
@@ -203,6 +207,7 @@ impl DecodeResult {
             pos_offset_ub: 0.0,
             neg_offset_lb: 0.0,
             neg_offset_ub: 0.0,
+            offsets_approximate: false,
             conservative_wkt: None,
             pos_uncertainty_wkt: None,
             neg_uncertainty_wkt: None,
@@ -389,11 +394,30 @@ impl Decoder {
                         })
                     })
                     .collect();
+                let dnp_lb_sum: f64 = loc_ref.lrps.iter()
+                    .filter_map(|l| l.dnp.map(|d| d.lb)).sum();
+                let dnp_ub_sum: f64 = loc_ref.lrps.iter()
+                    .filter_map(|l| l.dnp.map(|d| d.ub)).sum();
+                let (pos_offset_lb, pos_offset_ub, pos_approx) = approximate_offset(
+                    loc_ref.lrps.first().and_then(|l| l.pos_offset_raw),
+                    loc_ref.lrps.first().and_then(|l| l.pos_offset),
+                    dnp_lb_sum, dnp_ub_sum,
+                );
+                let (neg_offset_lb, neg_offset_ub, neg_approx) = approximate_offset(
+                    loc_ref.lrps.last().and_then(|l| l.neg_offset_raw),
+                    loc_ref.lrps.last().and_then(|l| l.neg_offset),
+                    dnp_lb_sum, dnp_ub_sum,
+                );
                 let full_result = DecodeResult {
                     lrps: lrp_info_vec(&loc_ref.lrps, &[], &[], &[]),
                     format: self.openlr_format.to_string(),
                     trace: trace_value,
                     segments: overflow_segments,
+                    pos_offset_lb,
+                    pos_offset_ub,
+                    neg_offset_lb,
+                    neg_offset_ub,
+                    offsets_approximate: pos_approx || neg_approx,
                     ..DecodeResult::err(&error_str)
                 };
                 return match serde_json::to_string(&full_result) {
@@ -772,6 +796,22 @@ impl Decoder {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
+/// Compute approximate offset bounds for a failed decode using DNP sum as the
+/// path-length proxy. Returns (lb, ub, approximate). When no offset is encoded
+/// returns (0.0, 0.0, false). TPEG offsets are exact even on failure.
+fn approximate_offset(raw: Option<u8>, exact: Option<openlr_codec::LinearInterval>,
+                      dnp_lb_sum: f64, dnp_ub_sum: f64) -> (f64, f64, bool) {
+    if let Some(n) = raw {
+        let lb = n as f64 / 256.0 * dnp_lb_sum;
+        let ub = (n as f64 + 1.0) / 256.0 * dnp_ub_sum;
+        (lb, ub, true)
+    } else if let Some(i) = exact {
+        (i.lb, i.ub, false)
+    } else {
+        (0.0, 0.0, false)
+    }
+}
+
 impl Decoder {
     /// Build the JSON success response from a `DecodedLocation`.
     /// Shared by `decode()` and `decode_forced()`.
@@ -895,6 +935,7 @@ impl Decoder {
             pos_offset_ub,
             neg_offset_lb,
             neg_offset_ub,
+            offsets_approximate: false,
             conservative_wkt: None,
             pos_uncertainty_wkt,
             neg_uncertainty_wkt,

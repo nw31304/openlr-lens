@@ -31,7 +31,7 @@ export function diagnoseSuccess(result) {
   for (const d of dnpChecked) {
     if (d.actual_m != null && d.actual_m < 10) {
       bullets.push(
-        `Leg ${d.leg}: routed path is only ${d.actual_m.toFixed(1)} m — ` +
+        `Leg ${d.leg + 1}: routed path is only ${d.actual_m.toFixed(1)} m — ` +
         `both LRP anchors appear to have snapped to the same map location.`
       );
     }
@@ -158,7 +158,7 @@ function diagnoseNoRoute(failedLeg, ranked, terminated, routeFailed) {
     const over  = actual_m > ub ? (actual_m - ub).toFixed(0) : null;
     const under = actual_m < lb ? (lb - actual_m).toFixed(0) : null;
     return {
-      headline: `Route found but DNP out of range on leg ${failedLeg}`,
+      headline: `Route found but DNP out of range on leg ${failedLeg + 1}`,
       bullets: [
         `Best path length: ${actual_m.toFixed(0)} m`,
         `Expected range: [${lb.toFixed(0)}, ${ub.toFixed(0)}] m`,
@@ -174,7 +174,7 @@ function diagnoseNoRoute(failedLeg, ranked, terminated, routeFailed) {
 
   if (legTerminated.length === 0) {
     return {
-      headline: `No route found for leg ${failedLeg}`,
+      headline: `No route found for leg ${failedLeg + 1}`,
       bullets: ['No path connected the candidate LRPs within the search constraints.'],
       suggestions: ['Try increasing max path search factor or candidate search radius.'],
     };
@@ -233,7 +233,7 @@ function diagnoseNoRoute(failedLeg, ranked, terminated, routeFailed) {
   }
 
   return {
-    headline: `No route found for leg ${failedLeg}`,
+    headline: `No route found for leg ${failedLeg + 1}`,
     bullets,
     suggestions: [...new Set(suggestions)],
   };
@@ -343,7 +343,7 @@ export function diagnoseSegment(segId, segProps, decodeResult, lfrcnpTolerance =
       const effective = Math.min(encoded + lfrcnpTolerance, 7);
       if (segFrc > effective) {
         const tolNote = lfrcnpTolerance > 0 ? ` encoded ${encoded} + tolerance ${lfrcnpTolerance}` : '';
-        frcBlocked.push(`leg ${i} (floor ${effective}${tolNote})`);
+        frcBlocked.push(`leg ${i + 1} (floor ${effective}${tolNote})`);
       }
     }
     if (frcBlocked.length > 0) {

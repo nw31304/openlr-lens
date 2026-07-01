@@ -45,7 +45,7 @@ export const TOOL_DEFINITIONS = [
         properties: {
           lrp_index: {
             type: 'integer',
-            description: 'Zero-based LRP index.',
+            description: '1-based LRP index (LRP 1 = first, LRP 2 = second, etc.).',
           },
           include_rejected: {
             type: 'boolean',
@@ -67,7 +67,7 @@ export const TOOL_DEFINITIONS = [
         properties: {
           leg_index: {
             type: 'integer',
-            description: 'Zero-based leg index (leg 0 = LRP 0 → LRP 1).',
+            description: '1-based leg index (leg 1 = LRP 1 → LRP 2).',
           },
         },
         required: ['leg_index'],
@@ -85,7 +85,7 @@ export const TOOL_DEFINITIONS = [
         properties: {
           leg_index: {
             type: 'integer',
-            description: 'Zero-based leg index.',
+            description: '1-based leg index.',
           },
         },
         required: ['leg_index'],
@@ -221,7 +221,7 @@ export const TOOL_DEFINITIONS = [
       parameters: {
         type: 'object',
         properties: {
-          lrp_index: { type: 'integer', description: 'Zero-based LRP index.' },
+          lrp_index: { type: 'integer', description: '1-based LRP index.' },
         },
         required: ['lrp_index'],
       },
@@ -241,7 +241,7 @@ export const TOOL_DEFINITIONS = [
         properties: {
           leg_index: {
             type: 'integer',
-            description: 'Zero-based leg index.',
+            description: '1-based leg index.',
           },
           segment_id: {
             type: 'integer',
@@ -263,7 +263,7 @@ export const TOOL_DEFINITIONS = [
       parameters: {
         type: 'object',
         properties: {
-          leg_index: { type: 'integer', description: 'Zero-based leg index.' },
+          leg_index: { type: 'integer', description: '1-based leg index.' },
         },
         required: ['leg_index'],
       },
@@ -298,7 +298,7 @@ export const TOOL_DEFINITIONS = [
             items: {
               type: 'object',
               properties: {
-                lrp_index:  { type: 'integer', description: 'Zero-based LRP index.' },
+                lrp_index:  { type: 'integer', description: '1-based LRP index.' },
                 segment_id: { type: 'integer', description: 'Internal segment ID from get_lrp_candidates.' },
                 traversal:  { type: 'string',  description: '"Forward" or "Backward".' },
               },
@@ -349,7 +349,7 @@ export const TOOL_DEFINITIONS = [
         properties: {
           leg_index: {
             type: 'integer',
-            description: 'Zero-based leg index (determines the LFRCNP constraint).',
+            description: '1-based leg index (determines the LFRCNP constraint).',
           },
           segment_ids: {
             type: 'array',
@@ -375,7 +375,7 @@ export const TOOL_DEFINITIONS = [
         properties: {
           leg_index: {
             type: 'integer',
-            description: 'Zero-based leg index (supplies the DNP window).',
+            description: '1-based leg index (supplies the DNP window).',
           },
           segment_ids: {
             type: 'array',
@@ -428,7 +428,7 @@ export const TOOL_DEFINITIONS = [
         properties: {
           lrp_index: {
             type: 'integer',
-            description: 'Zero-based LRP index.',
+            description: '1-based LRP index.',
           },
           segment_id: {
             type: 'integer',
@@ -493,6 +493,11 @@ function parseVerdict(raw) {
   return { verdict: key, excess: excess != null ? r1(excess) : null };
 }
 
+function resolveSourceKey(decoder, segId) {
+  if (!decoder) return null;
+  try { return JSON.parse(decoder.get_segment(segId))?.source_key ?? null; } catch { return null; }
+}
+
 // ── Trace event extractor ─────────────────────────────────────────────────────
 
 function getTraceEvents(events, variant) {
@@ -542,16 +547,17 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
       };
 
       const pathRows = segs.map(s => ({
-        seg_id:    s.segment_id,
-        frc:       s.frc,
-        fow:       s.fow,
-        direction: s.direction,
-        length_m:  r1(s.length_m),
+        seg_id:     s.segment_id,
+        source_key: s.source_id ?? s.source_key ?? null,
+        frc:        s.frc,
+        fow:        s.fow,
+        direction:  s.direction,
+        length_m:   r1(s.length_m),
       }));
 
       return toonResponse(scalars,
         pathRows.length
-          ? [{ label: 'path', rows: pathRows, fields: ['seg_id','frc','fow','direction','length_m'] }]
+          ? [{ label: 'path', rows: pathRows, fields: ['seg_id','source_key','frc','fow','direction','length_m'] }]
           : []
       );
     }
@@ -579,12 +585,14 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
 
     case 'get_lrp_candidates': {
       const { lrp_index, include_rejected = false } = args;
+      const idx0 = lrp_index - 1;
       const ranked = getTraceEvents(events, 'CandidatesRanked');
-      const data = ranked.find(e => e.lrp_idx === lrp_index);
+      const data = ranked.find(e => e.lrp_idx === idx0);
       if (!data) return JSON.stringify({ error: `No candidate trace data for LRP ${lrp_index}.` });
 
       const acceptedRows = (data.accepted ?? []).map(c => ({
         seg_id:      c.segment_id,
+        source_key:  resolveSourceKey(decoder, c.segment_id),
         traversal:   c.traversal,
         dist_m:      r1(c.projection?.distance_m),
         bearing_deg: r1(c.projection?.bearing_deg),
@@ -604,7 +612,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
       const tables = [{
         label:  'accepted',
         rows:   acceptedRows,
-        fields: ['seg_id','traversal','dist_m','bearing_deg','dist_sc','bear_sc','frc_sc','fow_sc','total'],
+        fields: ['seg_id','source_key','traversal','dist_m','bearing_deg','dist_sc','bear_sc','frc_sc','fow_sc','total'],
       }];
 
       if (include_rejected) {
@@ -612,6 +620,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
           const { verdict, excess } = parseVerdict(r.verdict);
           return {
             seg_id:      r.segment_id,
+            source_key:  resolveSourceKey(decoder, r.segment_id),
             dist_m:      r.projection?.distance_m != null ? r1(r.projection.distance_m) : null,
             bearing_deg: r.projection?.bearing_deg != null ? r1(r.projection.bearing_deg) : null,
             verdict,
@@ -621,7 +630,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
         tables.push({
           label:  'rejected',
           rows:   rejectedRows,
-          fields: ['seg_id','dist_m','bearing_deg','verdict','excess'],
+          fields: ['seg_id','source_key','dist_m','bearing_deg','verdict','excess'],
         });
       }
 
@@ -630,10 +639,11 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
 
     case 'get_leg_summary': {
       const { leg_index } = args;
+      const idx0 = leg_index - 1;
       const routing = {};
       for (const ev of routingEvents) {
         const [type, data] = Object.entries(ev)[0];
-        if (data.leg !== leg_index) continue;
+        if (data.leg !== idx0) continue;
         switch (type) {
           case 'RouteFound':      routing.result = { found: true,  ...data }; break;
           case 'RouteFailed':     routing.result = { found: false, ...data }; break;
@@ -672,8 +682,9 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
 
     case 'get_route_segments': {
       const { leg_index } = args;
+      const idx0 = leg_index - 1;
       const found = getTraceEvents(routingEvents, 'RouteFound');
-      const data = found.find(e => e.leg === leg_index);
+      const data = found.find(e => e.leg === idx0);
       if (!data) return JSON.stringify({ error: `No successful route found for leg ${leg_index}.` });
 
       const segById = new Map((activeResult.segments ?? []).map(s => [s.segment_id, s]));
@@ -684,6 +695,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
         if (len != null) cumul += len;
         return {
           seg_id:    id,
+          source_key: info?.source_id ?? info?.source_key ?? resolveSourceKey(decoder, id),
           frc:       info?.frc       ?? null,
           fow:       info?.fow       ?? null,
           direction: info?.direction ?? null,
@@ -705,7 +717,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
           from_snap: fromSnap ? `${fromSnap[0]},${fromSnap[1]}` : null,
           to_snap:   toSnap   ? `${toSnap[0]},${toSnap[1]}`     : null,
         },
-        [{ label: 'segments', rows: segRows, fields: ['seg_id','frc','fow','direction','length_m','cumul_m'] }]
+        [{ label: 'segments', rows: segRows, fields: ['seg_id','source_key','frc','fow','direction','length_m','cumul_m'] }]
       );
     }
 
@@ -793,7 +805,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
     case 'focus_lrp': {
       const { lrp_index } = args;
       if (!storeActions) return JSON.stringify({ error: 'Store actions not available.' });
-      const lrp = decodeResult.lrps?.[lrp_index];
+      const lrp = decodeResult.lrps?.[lrp_index - 1];
       if (!lrp) return JSON.stringify({ error: `LRP ${lrp_index} not found.` });
       storeActions.flyTo(lrp.lat, lrp.lon, 16);
       return JSON.stringify({ ok: true, lat: lrp.lat, lon: lrp.lon });
@@ -801,7 +813,8 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
 
     case 'get_astar_skipped_edges': {
       const { leg_index, segment_id } = args;
-      const skipped = getTraceEvents(routingEvents, 'AStarEdgeSkipped').filter(e => e.leg === leg_index);
+      const idx0 = leg_index - 1;
+      const skipped = getTraceEvents(routingEvents, 'AStarEdgeSkipped').filter(e => e.leg === idx0);
       if (!skipped.length) {
         const hasFullTrace = routingEvents.some(e => e.AStarEdgeSkipped !== undefined || e.AStarNodeExpanded !== undefined);
         if (!hasFullTrace) return JSON.stringify({ error: 'Full trace required. Set Trace Level → Full and decode again.' });
@@ -829,12 +842,13 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
 
     case 'get_forced_leg_summary': {
       const { leg_index } = args;
+      const idx0 = leg_index - 1;
       if (!forcedDecodeResult) return JSON.stringify({ error: 'No forced decode result. Call run_forced_decode first.' });
       const fEvents = forcedDecodeResult.trace?.events ?? [];
       const routing = {};
       for (const ev of fEvents) {
         const [type, data] = Object.entries(ev)[0];
-        if (data.leg !== leg_index) continue;
+        if (data.leg !== idx0) continue;
         switch (type) {
           case 'RouteFound':      routing.result = { found: true,  ...data }; break;
           case 'RouteFailed':     routing.result = { found: false, ...data }; break;
@@ -871,7 +885,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
       for (const s of started) {
         if (s.leg === 0 || current === null) { current = { legs: [] }; combos.push(current); }
         // Find outcome event for this specific leg search (next RouteFound/RouteFailed for this leg after this start)
-        current.legs.push({ leg: s.leg, from_seg: s.from.segment_id, from_trav: s.from.traversal, to_seg: s.to.segment_id, to_trav: s.to.traversal });
+        current.legs.push({ leg: s.leg + 1, from_seg: s.from.segment_id, from_trav: s.from.traversal, to_seg: s.to.segment_id, to_trav: s.to.traversal });
       }
       // Match outcomes: RouteFound/RouteFailed events per leg
       const foundEvts  = getTraceEvents(events, 'RouteFound');
@@ -881,7 +895,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
         const rf = foundEvts.find((e, i) => e.leg === s.leg && i === started.slice(0, idx + 1).filter(x => x.leg === s.leg).length - 1);
         const fail = failedEvts.find((e, i) => e.leg === s.leg && i === started.slice(0, idx + 1).filter(x => x.leg === s.leg).length - 1);
         const outcome = rf ? `found(${r1(rf.length_m)}m)` : fail ? `failed` : 'incomplete';
-        return { leg: s.leg, from_seg: s.from.segment_id, from_trav: s.from.traversal, to_seg: s.to.segment_id, to_trav: s.to.traversal, outcome };
+        return { leg: s.leg + 1, from_seg: s.from.segment_id, from_trav: s.from.traversal, to_seg: s.to.segment_id, to_trav: s.to.traversal, outcome };
       });
       return toonResponse(
         { total_attempts: started.length, cap_hit: exhausted != null, cap_limit: exhausted?.limit ?? null },
@@ -905,14 +919,15 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
       const resolved = [];
       const errs = [];
       for (const { lrp_index, segment_id, traversal } of snaps) {
-        const lrpData = ranked.find(e => e.lrp_idx === lrp_index);
+        const idx0 = lrp_index - 1;
+        const lrpData = ranked.find(e => e.lrp_idx === idx0);
         if (!lrpData) { errs.push(`LRP ${lrp_index}: no candidate trace data`); continue; }
         const c = (lrpData.accepted ?? []).find(
           a => a.segment_id === segment_id && a.traversal === traversal
         );
         if (!c) { errs.push(`LRP ${lrp_index}: segment ${segment_id} (${traversal}) not in accepted list`); continue; }
         resolved.push({
-          lrp_index,
+          lrp_index: idx0,
           segment_id:   c.segment_id,
           traversal:    c.traversal,
           arc_offset_m: c.projection.arc_offset_m,
@@ -934,7 +949,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
       const totalLengthM = segs.reduce((s, seg) => s + (seg.length_m ?? 0), 0);
       const forcedEvents = result.trace?.events ?? [];
       const legResults = getTraceEvents(forcedEvents, 'DnpChecked').map(d => ({
-        leg:        d.leg,
+        leg:        d.leg + 1,
         actual_m:   r1(d.actual_m),
         window_lb:  r1(d.interval?.lb),
         window_ub:  r1(d.interval?.ub),
@@ -993,7 +1008,7 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
         const isLast = i === decodeResult.lrps.length - 1;
         const fill = i === 0 ? '#4caf50' : isLast ? '#f44336' : '#ff9800';
         return `<circle cx="${x}" cy="${y}" r="5" fill="${fill}" stroke="#fff" stroke-width="1.5"/>`
-          + `<text x="${x}" y="${y - 8}" text-anchor="middle" fill="${fill}" font-size="9" font-family="sans-serif">L${i}</text>`;
+          + `<text x="${x}" y="${y - 8}" text-anchor="middle" fill="${fill}" font-size="9" font-family="sans-serif">L${i + 1}</text>`;
       }).join('');
 
       const metersPerLonDeg = 111320 * Math.cos(midLat * Math.PI / 180);
@@ -1022,11 +1037,12 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
 
     case 'check_path_feasibility': {
       const { leg_index, segment_ids } = args;
+      const idx0 = leg_index - 1;
       if (!Array.isArray(segment_ids) || segment_ids.length === 0)
         return JSON.stringify({ error: 'segment_ids must be a non-empty array.' });
       if (!decoder) return JSON.stringify({ error: 'Decoder not available.' });
 
-      const lrp = decodeResult.lrps?.[leg_index];
+      const lrp = decodeResult.lrps?.[idx0];
       if (!lrp) return JSON.stringify({ error: `No LRP at index ${leg_index}.` });
 
       const lfrcnp = (lrp.lfrcnp ?? 7) + (params?.lfrcnp_tolerance ?? 0);
@@ -1116,17 +1132,18 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
 
     case 'score_path': {
       const { leg_index, segment_ids } = args;
+      const idx0 = leg_index - 1;
       if (!Array.isArray(segment_ids) || segment_ids.length === 0)
         return JSON.stringify({ error: 'segment_ids must be a non-empty array.' });
       if (!decoder) return JSON.stringify({ error: 'Decoder not available.' });
 
-      const lrp = decodeResult.lrps?.[leg_index];
+      const lrp = decodeResult.lrps?.[idx0];
       if (!lrp) return JSON.stringify({ error: `No LRP at index ${leg_index}.` });
 
-      const routeFoundEvt = getTraceEvents(routingEvents, 'RouteFound').find(e => e.leg === leg_index);
+      const routeFoundEvt = getTraceEvents(routingEvents, 'RouteFound').find(e => e.leg === idx0);
       const actualLengthM = routeFoundEvt?.length_m ?? null;
 
-      const dnpEvt  = getTraceEvents(routingEvents, 'DnpChecked').find(e => e.leg === leg_index);
+      const dnpEvt  = getTraceEvents(routingEvents, 'DnpChecked').find(e => e.leg === idx0);
       const windowLb = dnpEvt?.interval?.lb ?? null;
       const windowUb = dnpEvt?.interval?.ub ?? null;
 
@@ -1214,12 +1231,13 @@ export async function executeTool(name, args, { decodeResult, params, decoder, s
 
     case 'get_bearing_geometry': {
       const { lrp_index, segment_id } = args;
+      const idx0 = lrp_index - 1;
       if (!decoder) return JSON.stringify({ error: 'Decoder not available.' });
 
-      const lrp = decodeResult.lrps?.[lrp_index];
+      const lrp = decodeResult.lrps?.[idx0];
       if (!lrp) return JSON.stringify({ error: `No LRP at index ${lrp_index}.` });
 
-      const rankedEvent = getTraceEvents(events, 'CandidatesRanked').find(e => e.lrp_idx === lrp_index);
+      const rankedEvent = getTraceEvents(events, 'CandidatesRanked').find(e => e.lrp_idx === idx0);
       if (!rankedEvent) return JSON.stringify({ error: `No candidate trace data for LRP ${lrp_index}. Ensure trace level is Summary or Full.` });
 
       const accepted   = rankedEvent.accepted ?? [];
