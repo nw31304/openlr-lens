@@ -288,8 +288,14 @@ export const useStore = create(persist(
         return;
       }
 
-      // Tool-call step: clear any streamed preamble text
-      set({ llmStreamingContent: null });
+      // Tool-call step: clear any streamed preamble text; pre-populate strip
+      // with pending calls so the user sees them before execution starts
+      const pendingCalls = resp.tool_calls.map(tc => {
+        let args = {};
+        try { args = JSON.parse(tc.function.arguments); } catch {}
+        return { label: toolCallLabel(tc.function.name, args), args_bytes: tc.function.arguments.length, result_bytes: 0, pending: true };
+      });
+      set({ llmStreamingContent: null, llmLastToolActivity: buildToolActivity([...toolCalls, ...pendingCalls]) });
 
       // Tool-use round: add assistant tool-call message to history and execute each tool
       const assistantApiEntry = {
@@ -328,6 +334,8 @@ export const useStore = create(persist(
           toolResult = JSON.stringify({ error: e.message });
           toolCalls.push({ label: tc.function.name, args_bytes: 0, result_bytes: toolResult.length });
         }
+        // Update strip in real-time so each tool appears as it completes
+        set({ llmLastToolActivity: buildToolActivity(toolCalls) });
         const toolApiEntry = { role: 'tool', tool_call_id: tc.id, content: toolResult };
         newApiEntries.push(toolApiEntry);
         apiHistory = [...apiHistory, toolApiEntry];

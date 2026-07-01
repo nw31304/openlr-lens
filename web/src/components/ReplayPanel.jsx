@@ -189,7 +189,7 @@ function describeStep(step) {
       }
       if (reason.DnpOutOfRange) {
         const { actual_m, window } = reason.DnpOutOfRange;
-        const lb = window?.lb ?? 0, ub = window?.ub ?? 0;
+        const lb = Math.max(0, window?.lb ?? 0), ub = window?.ub ?? 0;
         const over  = actual_m > ub ? `${(actual_m - ub).toFixed(0)} m over` : null;
         const under = actual_m < lb ? `${(lb - actual_m).toFixed(0)} m under` : null;
         return `Leg ${step.leg + 1} — DNP mismatch · ${actual_m.toFixed(0)} m vs [${lb.toFixed(0)}, ${ub.toFixed(0)}] m (${over ?? under ?? 'failed'})`;
@@ -198,7 +198,7 @@ function describeStep(step) {
     }
 
     case 'dnp_checked': {
-      const lb = step.interval?.lb ?? 0, ub = step.interval?.ub ?? 0;
+      const lb = Math.max(0, step.interval?.lb ?? 0), ub = step.interval?.ub ?? 0;
       return `Leg ${step.leg + 1} — DNP ${step.actual_m.toFixed(0)} m ∈ [${lb.toFixed(0)}, ${ub.toFixed(0)}] ${step.passed ? '✓' : '✗'}`;
     }
 

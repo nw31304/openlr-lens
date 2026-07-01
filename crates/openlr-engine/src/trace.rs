@@ -15,6 +15,33 @@ pub enum TraceLevel {
 
 // ── Per-candidate data ────────────────────────────────────────────────────────
 
+/// Which kind of snap point was evaluated for a segment/direction pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SnapType {
+    /// Perpendicular foot from the LRP onto the segment interior.
+    Interior,
+    /// Segment entry endpoint (arc = 0).
+    Entry,
+    /// Segment exit endpoint (arc = seg_length).
+    Exit,
+}
+
+/// Result of evaluating one snap position during candidate scoring.
+/// The best-scoring snap is promoted to `ProjectionResult`; all are stored here.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SnapEvaluation {
+    pub snap_type: SnapType,
+    pub arc_offset_m: f64,
+    pub point: (f64, f64),
+    /// Haversine distance from the LRP to this specific snap point.
+    pub distance_m: f64,
+    pub bearing_deg: f64,
+    /// `Some` only when the snap passed all hard gates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<CandidateScore>,
+    pub verdict: GateVerdict,
+}
+
 /// Data derived by projecting an LRP coordinate onto a segment.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectionResult {
@@ -158,10 +185,14 @@ pub enum DecodeEvent {
         lrp_idx: usize,
         segment_id: SegmentId,
         traversal: TraversalDir,
+        /// Winning snap (best-scoring one that passed all gates, or the representative snap on rejection).
         projection: ProjectionResult,
         verdict: GateVerdict,
         /// Some only when verdict is Pass.
         score: Option<CandidateScore>,
+        /// All snap positions evaluated for this (segment, direction) pair.
+        /// Empty for early radius/direction rejects (no snap evaluation performed).
+        snap_evaluations: Vec<SnapEvaluation>,
     },
     /// Final ranked set after all candidates evaluated (Summary + Full).
     CandidatesRanked {

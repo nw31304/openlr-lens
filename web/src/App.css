@@ -970,6 +970,7 @@ html, body, #root, .app {
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
+.llm-tool-pending { opacity: 0.45; font-style: italic; }
 
 .llm-chat-body {
   flex: 1;
@@ -2774,6 +2775,27 @@ html, body, #root, .app {
 /* Candidate table — allow horizontal scroll on small panels */
 .tp-cand-table { min-width: 500px; }
 .tp-section-body:has(.tp-cand-table) { overflow-x: auto; }
+
+/* Snap-type badge in the Arc m cell */
+.tp-snap-tag {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  vertical-align: middle;
+  letter-spacing: 0.02em;
+}
+.tp-snap-start { background: rgba(0,200,100,0.25); color: #55ee99; }
+.tp-snap-end   { background: rgba(255,140,0,0.25); color: #ffaa44; }
+.tp-snap-int   { background: rgba(180,130,255,0.2); color: #bb99ff; }
+
+/* Snap-type in candidate popup */
+.cand-snap-type { font-size: 12px; }
+.cand-snap-start { color: #55ee99; }
+.cand-snap-end   { color: #ffaa44; }
+.cand-snap-interior { color: #bb99ff; }
 
 /* Segment highlight button */
 

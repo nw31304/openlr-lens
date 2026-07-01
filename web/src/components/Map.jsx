@@ -3090,6 +3090,11 @@ function CandidatePopupBody({ p }) {
           <tr><td className="seg-info-key">Arc offset</td><td><b>{fmt(p.arc_offset_m)} m</b></td></tr>}
         {p.bearing_deg != null &&
           <tr><td className="seg-info-key">Bearing</td><td><b>{fmt(p.bearing_deg, 1)}°</b></td></tr>}
+        {p.snap_type != null && <tr><td className="seg-info-key">Snap type</td><td>
+          <b className={`cand-snap-type cand-snap-${p.snap_type}`}>
+            {p.snap_type === 'start' ? 'Start endpoint' : p.snap_type === 'end' ? 'End endpoint' : 'Interior'}
+          </b>
+        </td></tr>}
         {p.snap_lat != null &&
           <tr><td className="seg-info-key">Snap point</td><td><b style={{fontSize:'11px'}}>{Number(p.snap_lat).toFixed(6)}, {Number(p.snap_lon).toFixed(6)}</b></td></tr>}
 

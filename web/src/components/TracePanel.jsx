@@ -117,7 +117,7 @@ function fmtRouteFailReason(reason) {
   if (typeof reason === 'string') return reason;
   const [type, data] = Object.entries(reason)[0];
   if (type === 'DnpOutOfRange') {
-    return `DNP out of range (actual ${data.actual_m?.toFixed(1)}m, window [${data.window?.lb?.toFixed(1)}, ${data.window?.ub?.toFixed(1)}]m)`;
+    return `DNP out of range (actual ${data.actual_m?.toFixed(1)}m, window [${Math.max(0, data.window?.lb ?? 0).toFixed(1)}, ${data.window?.ub?.toFixed(1)}]m)`;
   }
   return type;
 }
@@ -162,6 +162,12 @@ function SegBtn({ segId, setTraceHighlight, onSelect }) {
   );
 }
 
+function snapType(projection) {
+  if (projection?.is_at_entry) return 'start';
+  if (projection?.is_at_exit)  return 'end';
+  return 'interior';
+}
+
 function buildCandPopup(segId, lrpIdx, traversal, ctype, winner, snapPt, projection, score, verdict) {
   const feat = getSegGeomCache().get(segId);
   return {
@@ -173,6 +179,7 @@ function buildCandPopup(segId, lrpIdx, traversal, ctype, winner, snapPt, project
     winner:       winner ?? false,
     snap_lon:     snapPt?.[0] ?? null,
     snap_lat:     snapPt?.[1] ?? null,
+    snap_type:    snapType(projection),
     distance_m:   projection?.distance_m ?? null,
     arc_offset_m: projection?.arc_offset_m ?? null,
     bearing_deg:  projection?.bearing_deg ?? null,
@@ -308,6 +315,15 @@ function fmtVerdict(verdict) {
   }
 }
 
+// ── Snap-type badge ───────────────────────────────────────────────────────────
+
+function SnapTag({ projection }) {
+  if (!projection) return null;
+  if (projection.is_at_entry) return <span className="tp-snap-tag tp-snap-start" title="Snapped to start endpoint">S</span>;
+  if (projection.is_at_exit)  return <span className="tp-snap-tag tp-snap-end"   title="Snapped to end endpoint">E</span>;
+  return                              <span className="tp-snap-tag tp-snap-int"   title="Snapped to interior">I</span>;
+}
+
 // ── Candidates section ────────────────────────────────────────────────────────
 
 function RejectedTable({ rejected, lrpIdx, setTraceHighlight, setCandidatePopup }) {
@@ -392,6 +408,7 @@ function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight, setCandi
               <th title="FRC component">FRC</th>
               <th title="FOW component">FOW</th>
               <th title="wrong endpoint component">WEP</th>
+              <th title="interior snap penalty">INT</th>
             </tr>
           </thead>
           <tbody>
@@ -428,13 +445,18 @@ function CandidatesSection({ lrpIdx, phase, lrpInfo, setTraceHighlight, setCandi
                   <td className="tp-dim">{c.traversal === 'Forward' ? 'Fwd' : 'Bwd'}</td>
                   <td>{c.projection.distance_m.toFixed(1)}</td>
                   <td>{c.projection.bearing_deg.toFixed(1)}</td>
-                  <td>{c.projection.arc_offset_m.toFixed(1)}</td>
+                  <td>
+                    {c.projection.arc_offset_m.toFixed(1)}
+                    {' '}
+                    <SnapTag projection={c.projection} />
+                  </td>
                   <td className="tp-score-total">{fmtScore(c.score.total)}</td>
                   <td className="tp-dim">{fmtScore(c.score.distance_score)}</td>
                   <td className="tp-dim">{fmtScore(c.score.bearing_score)}</td>
                   <td className="tp-dim">{fmtScore(c.score.frc_score)}</td>
                   <td className="tp-dim">{fmtScore(c.score.fow_score)}</td>
                   <td className="tp-dim">{fmtScore(c.score.wrong_endpoint_score)}</td>
+                  <td className="tp-dim">{fmtScore(c.score.interior_score)}</td>
                 </tr>
               );
             })}

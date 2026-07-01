@@ -154,7 +154,7 @@ function diagnoseNoRoute(failedLeg, ranked, terminated, routeFailed) {
   const dnpFailures = legFailed.filter(f => f.reason?.DnpOutOfRange !== undefined);
   if (dnpFailures.length > 0 && dnpFailures.length === legFailed.length) {
     const { actual_m, window } = dnpFailures[0].reason.DnpOutOfRange;
-    const lb = window?.lb ?? 0, ub = window?.ub ?? 0;
+    const lb = Math.max(0, window?.lb ?? 0), ub = window?.ub ?? 0;
     const over  = actual_m > ub ? (actual_m - ub).toFixed(0) : null;
     const under = actual_m < lb ? (lb - actual_m).toFixed(0) : null;
     return {

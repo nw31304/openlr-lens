@@ -306,7 +306,7 @@ function applyStep(s, step, maxGTotal) {
       break;
 
     case 'dnp_checked': {
-      const lb = step.interval?.lb ?? 0, ub = step.interval?.ub ?? 0;
+      const lb = Math.max(0, step.interval?.lb ?? 0), ub = step.interval?.ub ?? 0;
       s.statusText = `Leg ${step.leg + 1} — DNP ${step.actual_m.toFixed(0)} m ∈ [${lb.toFixed(0)}, ${ub.toFixed(0)}] ${step.passed ? '✓' : '✗'}`;
       break;
     }

@@ -90,7 +90,11 @@ export default function LlmChatPanel() {
         >
           <span className="llm-tool-strip-icon">⚙</span>
           <span className="llm-tool-strip-calls">
-            {llmLastToolActivity.calls.map(c => c.label).join(' · ')}
+            {llmLastToolActivity.calls.map((c, i) => (
+              <span key={i} className={c.pending ? 'llm-tool-pending' : ''}>
+                {i > 0 && ' · '}{c.label}
+              </span>
+            ))}
           </span>
           <span className="llm-tool-strip-bytes">
             ↓{fmtBytes(llmLastToolActivity.total_result_bytes)}

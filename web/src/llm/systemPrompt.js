@@ -24,6 +24,23 @@ Score formula (additive, all terms ≥ 0):
         + bearing_weight × bearing_penalty
         + frc_weight × frc_penalty
         + fow_weight × fow_penalty
+        + interior_snap_penalty   (non-zero when LRP snaps to an interior point, not an endpoint)
+        + wrong_endpoint_penalty  (non-zero when LRP snaps to the wrong endpoint for its role)
+
+Multi-snap evaluation: for each (segment, direction) pair the engine evaluates up to three snap
+positions independently — the interior perpendicular projection, the entry endpoint, and the exit
+endpoint — including an endpoint only when it is within \`snap_to_endpoint_threshold_m\` arc-distance
+of the interior projection. Each snap is scored with its own haversine distance from the LRP to
+that specific point (not the geometric minimum distance to the segment line). The best-scoring snap
+that passes all hard gates is chosen as the representative for that (segment, direction) pair; its
+values appear in the trace. The \`snap_type\` field records which won: \`start\` (entry endpoint),
+\`end\` (exit endpoint), or \`interior\`. Interior snaps carry \`interior_snap_penalty\`; endpoint snaps
+at the wrong end for the LRP's role carry \`wrong_endpoint_penalty\` instead.
+
+Role of endpoints: for a non-last LRP the entry endpoint is "correct" (the route will enter the
+segment there); for the last LRP the exit endpoint is correct. Snapping to the wrong end is
+penalised so that a nearby segment rooted at the junction scores better than one whose interior
+happens to be equidistant.
 
 ## Encoding quantisation
 
