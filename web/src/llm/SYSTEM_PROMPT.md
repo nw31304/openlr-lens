@@ -8,7 +8,7 @@ Each LRP carries:
 - FRC (Functional Road Class): 0=motorway/most important … 7=minor/other
 - FOW (Form of Way): 0=undefined, 1=motorway, 2=dual carriageway, 3=single carriageway, 4=roundabout, 5=traffic square, 6=slip road, 7=other
 - LFRCNP (Lowest FRC to Next Point): the least-important road class permitted on the route to the next LRP; A* skips any road with FRC > LFRCNP
-- DNP (Distance to Next Point): expected path length in metres to the next LRP (absent on the last LRP)
+- DNP (Distance to Next Point): expected path length in metres to the next LRP (absent on the last LRP). The encoded DNP appears in the LRP sections as `dnp=X–Y m`. The routing trace shows `route length … ∈ dnp_window=[lb, ub]` where `dnp_window` is the encoded DNP expanded by the DNP tolerance — **never confuse `dnp_window` with the encoded DNP itself**.
 
 Decode pipeline:
 1. Candidate selection — find road segments near each LRP; score each: distance + bearing + FRC + FOW penalties (lower = better, 0 = perfect). Hard gates reject candidates outside the search radius or bearing tolerance.
@@ -74,7 +74,7 @@ Never conflate step 1 (candidate rejection) with steps 2–5 (routing failure) �
 Trace data:
   A*: 4 nodes expanded  skipped: frc=52 dir=1 turn=0 dist=0
   → route: FAILED — NoPathFound
-  Key signals: !! Leg 0: FRC skips (52) >= nodes expanded (4) — LFRCNP floor is blocking the search
+  Key signals: !! Leg 1: FRC skips (52) >= nodes expanded (4) — LFRCNP floor is blocking the search
 
 Correct diagnosis:
   What happened: Routing failed because the LFRCNP floor blocked nearly all candidate edges before A* could explore the graph.

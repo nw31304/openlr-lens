@@ -72,25 +72,53 @@ export function clearLlmConfig() {
   localStorage.removeItem(STORAGE_KEY);
 }
 
+// ── SSE reader ────────────────────────────────────────────────────────────────
+//
+// Yields parsed JSON objects from a streaming fetch response.
+// Ignores event-type lines, comment lines, and the [DONE] sentinel.
+
+async function* readSSE(response) {
+  const reader = response.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t || t.startsWith(':') || t.startsWith('event:')) continue;
+      if (t === 'data: [DONE]') return;
+      if (t.startsWith('data: ')) {
+        try { yield JSON.parse(t.slice(6)); } catch { /* skip malformed */ }
+      }
+    }
+  }
+}
+
 // ── API call ──────────────────────────────────────────────────────────────────
 //
 // config: { providerId, baseUrl, apiKey, model }
 // messages: [{ role: 'system'|'user'|'assistant', content: string }]
 // tools: OpenAI-format tool definitions (optional)
+// onDelta: optional callback(chunk: string) — called for each text chunk when streaming
 //
 // Returns: { ok: bool, content: string|null, tool_calls: array|null, error: string|null }
 
-export async function chatComplete(config, messages, tools) {
+export async function chatComplete(config, messages, tools, onDelta) {
   const provider = PROVIDERS.find(p => p.id === config.providerId);
   const authStyle = provider?.authStyle ?? 'bearer';
 
   if (authStyle === 'anthropic') {
-    return anthropicComplete(config, messages, tools);
+    return anthropicComplete(config, messages, tools, onDelta);
   }
-  return openaiComplete(config, messages, tools, authStyle);
+  return openaiComplete(config, messages, tools, authStyle, onDelta);
 }
 
-async function openaiComplete({ baseUrl, apiKey, model }, messages, tools, authStyle) {
+async function openaiComplete({ baseUrl, apiKey, model }, messages, tools, authStyle, onDelta) {
   const headers = { 'Content-Type': 'application/json' };
   if (authStyle === 'bearer' && apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`;
@@ -98,6 +126,7 @@ async function openaiComplete({ baseUrl, apiKey, model }, messages, tools, authS
 
   const body = { model, messages };
   if (tools?.length) body.tools = tools;
+  if (onDelta) body.stream = true;
 
   try {
     const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -105,10 +134,47 @@ async function openaiComplete({ baseUrl, apiKey, model }, messages, tools, authS
       headers,
       body: JSON.stringify(body),
     });
-    const data = await res.json();
-    if (!res.ok) return { ok: false, content: null, tool_calls: null, error: data.error?.message ?? `HTTP ${res.status}` };
-    const msg = data.choices?.[0]?.message;
-    return { ok: true, content: msg?.content ?? null, tool_calls: msg?.tool_calls ?? null, error: null };
+
+    if (!onDelta) {
+      const data = await res.json();
+      if (!res.ok) return { ok: false, content: null, tool_calls: null, error: data.error?.message ?? `HTTP ${res.status}` };
+      const msg = data.choices?.[0]?.message;
+      return { ok: true, content: msg?.content ?? null, tool_calls: msg?.tool_calls ?? null, error: null };
+    }
+
+    // Streaming path
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { ok: false, content: null, tool_calls: null, error: data.error?.message ?? `HTTP ${res.status}` };
+    }
+
+    let content = '';
+    const tcAccum = {}; // index → { id, name, args }
+
+    for await (const event of readSSE(res)) {
+      const delta = event.choices?.[0]?.delta;
+      if (!delta) continue;
+
+      if (delta.content) {
+        content += delta.content;
+        onDelta(delta.content);
+      }
+
+      for (const tc of delta.tool_calls ?? []) {
+        const idx = tc.index ?? 0;
+        if (!tcAccum[idx]) tcAccum[idx] = { id: '', name: '', args: '' };
+        if (tc.id) tcAccum[idx].id = tc.id;
+        if (tc.function?.name) tcAccum[idx].name += tc.function.name;
+        if (tc.function?.arguments) tcAccum[idx].args += tc.function.arguments;
+      }
+    }
+
+    const tcArr = Object.values(tcAccum);
+    const tool_calls = tcArr.length
+      ? tcArr.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.args } }))
+      : null;
+
+    return { ok: true, content: content || null, tool_calls, error: null };
   } catch (e) {
     return { ok: false, content: null, tool_calls: null, error: e.message };
   }
@@ -160,8 +226,7 @@ function toAnthropicMessages(messages) {
   return out;
 }
 
-async function anthropicComplete({ baseUrl, apiKey, model }, messages, tools) {
-  // Anthropic native schema: system prompt is a top-level field; tools have input_schema.
+async function anthropicComplete({ baseUrl, apiKey, model }, messages, tools, onDelta) {
   const systemMsg = messages.find(m => m.role === 'system');
   const nonSystem = toAnthropicMessages(messages.filter(m => m.role !== 'system'));
 
@@ -175,13 +240,13 @@ async function anthropicComplete({ baseUrl, apiKey, model }, messages, tools) {
   const body = { model, messages: nonSystem, max_tokens: 4096 };
   if (systemMsg) body.system = systemMsg.content;
   if (tools?.length) {
-    // Convert OpenAI tool format → Anthropic tool format
     body.tools = tools.map(t => ({
       name: t.function.name,
       description: t.function.description,
       input_schema: t.function.parameters,
     }));
   }
+  if (onDelta) body.stream = true;
 
   try {
     const res = await fetch(`${baseUrl}/v1/messages`, {
@@ -189,16 +254,49 @@ async function anthropicComplete({ baseUrl, apiKey, model }, messages, tools) {
       headers,
       body: JSON.stringify(body),
     });
-    const data = await res.json();
-    if (!res.ok) return { ok: false, content: null, tool_calls: null, error: data.error?.message ?? `HTTP ${res.status}` };
 
-    // Normalize response back to OpenAI-like shape
-    const textBlock = data.content?.find(b => b.type === 'text');
-    const toolBlocks = data.content?.filter(b => b.type === 'tool_use') ?? [];
-    const tool_calls = toolBlocks.length
-      ? toolBlocks.map(b => ({ id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input) } }))
+    if (!onDelta) {
+      const data = await res.json();
+      if (!res.ok) return { ok: false, content: null, tool_calls: null, error: data.error?.message ?? `HTTP ${res.status}` };
+
+      // Normalize response back to OpenAI-like shape
+      const textBlock = data.content?.find(b => b.type === 'text');
+      const toolBlocks = data.content?.filter(b => b.type === 'tool_use') ?? [];
+      const tool_calls = toolBlocks.length
+        ? toolBlocks.map(b => ({ id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input) } }))
+        : null;
+      return { ok: true, content: textBlock?.text ?? null, tool_calls, error: null };
+    }
+
+    // Streaming path
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { ok: false, content: null, tool_calls: null, error: data.error?.message ?? `HTTP ${res.status}` };
+    }
+
+    let textContent = '';
+    const toolBlocks = {}; // index → { id, name, args }
+
+    for await (const event of readSSE(res)) {
+      if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+        toolBlocks[event.index] = { id: event.content_block.id, name: event.content_block.name, args: '' };
+      } else if (event.type === 'content_block_delta') {
+        const d = event.delta;
+        if (d?.type === 'text_delta' && d.text) {
+          textContent += d.text;
+          onDelta(d.text);
+        } else if (d?.type === 'input_json_delta' && d.partial_json) {
+          if (toolBlocks[event.index]) toolBlocks[event.index].args += d.partial_json;
+        }
+      }
+    }
+
+    const toolArr = Object.values(toolBlocks);
+    const tool_calls = toolArr.length
+      ? toolArr.map(b => ({ id: b.id, type: 'function', function: { name: b.name, arguments: b.args } }))
       : null;
-    return { ok: true, content: textBlock?.text ?? null, tool_calls, error: null };
+
+    return { ok: true, content: textContent || null, tool_calls, error: null };
   } catch (e) {
     return { ok: false, content: null, tool_calls: null, error: e.message };
   }

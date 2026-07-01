@@ -157,7 +157,8 @@ export function buildDiagnosticPrompt(decodeResult, params) {
           const d = leg.dnp;
           const lb = Math.max(0, d.interval?.lb ?? 0).toFixed(0);
           const ub = (d.interval?.ub ?? 0).toFixed(0);
-          lines.push(`  DNP ${d.actual_m?.toFixed(0) ?? '?'} m ${d.passed ? '∈' : '∉'} [${lb}, ${ub}] m ${d.passed ? '✓' : '✗'}`);
+          // "dnp_window" = encoded DNP ± tolerance; distinct from the encoded DNP interval above
+          lines.push(`  route length ${d.actual_m?.toFixed(0) ?? '?'} m ${d.passed ? '∈' : '∉'} dnp_window=[${lb}, ${ub}] m ${d.passed ? '✓' : '✗'}`);
         }
         if (leg.astar) {
           const t = leg.astar;
@@ -198,7 +199,7 @@ export function buildDiagnosticPrompt(decodeResult, params) {
     }
     if (info.dnp && !info.dnp.passed) {
       const legNum = Number(leg) + 1;
-      signals.push(`Leg ${legNum}: DNP check FAILED — actual ${info.dnp.actual_m?.toFixed(0)}m outside window [${Math.max(0, info.dnp.interval?.lb ?? 0).toFixed(0)}, ${(info.dnp.interval?.ub ?? 0).toFixed(0)}]m`);
+      signals.push(`Leg ${legNum}: route length check FAILED — routed ${info.dnp.actual_m?.toFixed(0)}m outside dnp_window=[${Math.max(0, info.dnp.interval?.lb ?? 0).toFixed(0)}, ${(info.dnp.interval?.ub ?? 0).toFixed(0)}]m`);
     }
     if (info.dnp?.passed && info.dnp.actual_m != null && info.dnp.actual_m < 10) {
       const legNum = Number(leg) + 1;

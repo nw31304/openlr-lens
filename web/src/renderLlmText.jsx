@@ -97,13 +97,27 @@ const MD_COMPONENTS = {
 
 const DIAGRAM_RE = /(<diagram>[\s\S]*?<\/diagram>)/;
 
-export function renderLlmText(text) {
+// streaming=true: if there is an unclosed <diagram> tag, hide everything from
+// it onwards and show a spinner placeholder instead. Markdown text before it
+// renders normally.
+export function renderLlmText(text, { streaming = false } = {}) {
   if (!text) return null;
 
-  const parts = text.split(DIAGRAM_RE);
+  let displayText = text;
+  let pendingDiagram = false;
+
+  if (streaming) {
+    const openIdx = text.lastIndexOf('<diagram>');
+    if (openIdx !== -1 && text.indexOf('</diagram>', openIdx) === -1) {
+      displayText = text.slice(0, openIdx);
+      pendingDiagram = true;
+    }
+  }
+
+  const parts = displayText.split(DIAGRAM_RE);
   let diagIdx = 0;
 
-  return parts.map((part, i) => {
+  const elements = parts.map((part, i) => {
     if (part.startsWith('<diagram>') && part.endsWith('</diagram>')) {
       const svg = part.slice('<diagram>'.length, -'</diagram>'.length).trim();
       return <DiagramBlock key={`diag-${i}`} svg={svg} index={diagIdx++} />;
@@ -117,4 +131,14 @@ export function renderLlmText(text) {
       </div>
     );
   }).filter(Boolean);
+
+  if (pendingDiagram) {
+    elements.push(
+      <div key="pending-diagram" className="llm-diagram-pending">
+        ⟳ diagram…
+      </div>
+    );
+  }
+
+  return elements.length ? elements : null;
 }

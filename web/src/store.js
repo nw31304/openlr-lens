@@ -147,10 +147,11 @@ export const useStore = create(persist(
   showReplay: false,
   llmConfig: loadLlmConfig(),
   llmChatOpen: false,
-  llmMessages: [],     // display: { role, content, display?, error? }
-  llmApiHistory: [],   // api: full history including tool call/result turns (not shown in UI)
+  llmMessages: [],       // display: { role, content, display?, error? }
+  llmApiHistory: [],     // api: full history including tool call/result turns (not shown in UI)
   llmLastToolActivity: null, // { calls: [{label, result_bytes}], total_bytes } for last exchange
   llmLoading: false,
+  llmStreamingContent: null, // string while final response is streaming, null otherwise
   showSegmentLayer: false,
   decoding: false,
   decodeResult: null,
@@ -209,7 +210,7 @@ export const useStore = create(persist(
   clearLlmConfig: () => { clearLlmStorage(); set({ llmConfig: null }); },
 
   toggleLlmChat: () => set(s => ({ llmChatOpen: !s.llmChatOpen })),
-  clearLlmChat:  () => set({ llmMessages: [], llmApiHistory: [], llmLastToolActivity: null, llmLoading: false }),
+  clearLlmChat:  () => set({ llmMessages: [], llmApiHistory: [], llmLastToolActivity: null, llmLoading: false, llmStreamingContent: null }),
 
   // content = text sent to the API (may include appended format hints)
   // display = text shown in the chat bubble (the user's original words)
@@ -251,21 +252,30 @@ export const useStore = create(persist(
     // Accumulate tool call activity for the strip display
     const toolCalls = [];
 
+    // onDelta streams text into llmStreamingContent as the final response arrives.
+    // Tool-call steps may also stream text (brief preamble) which gets cleared when
+    // tools are detected.
+    const onDelta = (chunk) => {
+      set(s => ({ llmStreamingContent: (s.llmStreamingContent ?? '') + chunk }));
+    };
+
     const MAX_STEPS = 20;
     for (let step = 0; step < MAX_STEPS; step++) {
-      const resp = await chatComplete(llmConfig, apiHistory, TOOL_DEFINITIONS);
+      set({ llmStreamingContent: null }); // typing dots until first text chunk
+      const resp = await chatComplete(llmConfig, apiHistory, TOOL_DEFINITIONS, onDelta);
 
       if (!resp.ok) {
         set(s => ({
           llmMessages: [...s.llmMessages, { role: 'assistant', content: resp.error ?? 'Unknown error', error: true }],
           llmLastToolActivity: toolCalls.length ? buildToolActivity(toolCalls) : null,
           llmLoading: false,
+          llmStreamingContent: null,
         }));
         return;
       }
 
       if (!resp.tool_calls?.length) {
-        // Final text response — save display message + full api history
+        // Final text response — streaming content is already displayed; commit to history
         const assistantMsg = { role: 'assistant', content: resp.content ?? '' };
         const finalApiEntry = { role: 'assistant', content: resp.content ?? '' };
         set(s => ({
@@ -273,9 +283,13 @@ export const useStore = create(persist(
           llmApiHistory: [...llmApiHistory, ...newApiEntries, finalApiEntry],
           llmLastToolActivity: toolCalls.length ? buildToolActivity(toolCalls) : null,
           llmLoading: false,
+          llmStreamingContent: null,
         }));
         return;
       }
+
+      // Tool-call step: clear any streamed preamble text
+      set({ llmStreamingContent: null });
 
       // Tool-use round: add assistant tool-call message to history and execute each tool
       const assistantApiEntry = {
@@ -325,6 +339,7 @@ export const useStore = create(persist(
       llmMessages: [...s.llmMessages, { role: 'assistant', content: '[Max tool call steps reached without a final response]', error: true }],
       llmLastToolActivity: toolCalls.length ? buildToolActivity(toolCalls) : null,
       llmLoading: false,
+      llmStreamingContent: null,
     }));
   },
   toggleTrace:         () => set(state => ({ showTrace:         !state.showTrace })),

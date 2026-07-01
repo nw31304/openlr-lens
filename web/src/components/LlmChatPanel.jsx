@@ -39,7 +39,7 @@ function fmtBytes(n) {
 export default function LlmChatPanel() {
   const { llmChatOpen, toggleLlmChat, llmMessages, llmLoading,
           sendLlmMessage, clearLlmChat, llmConfig, decodeResult,
-          llmLastToolActivity } = useStore();
+          llmLastToolActivity, llmStreamingContent } = useStore();
   const [draft, setDraft] = useState('');
   const bottomRef = useRef(null);
   const panelRef  = useRef(null);
@@ -123,11 +123,20 @@ export default function LlmChatPanel() {
         ))}
 
         {llmLoading && (
-          <div className="llm-msg llm-msg-assistant">
-            <div className="llm-msg-bubble llm-typing">
-              <span /><span /><span />
+          llmStreamingContent != null ? (
+            <div className="llm-msg llm-msg-assistant">
+              <div className="llm-msg-bubble">
+                {renderLlmText(llmStreamingContent, { streaming: true })}
+                <span className="llm-streaming-cursor" />
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="llm-msg llm-msg-assistant">
+              <div className="llm-msg-bubble llm-typing">
+                <span /><span /><span />
+              </div>
+            </div>
+          )
         )}
         <div ref={bottomRef} />
       </div>
