@@ -66,7 +66,7 @@ export function buildReplaySteps(events) {
 
     switch (key) {
       case 'CandidateSearchStarted':
-        phases.push({ label: `LRP ${d.lrp_idx}`, startStep: steps.length, color: '#aa44ff' });
+        phases.push({ label: `LRP ${d.lrp_idx + 1}`, startStep: steps.length, color: '#aa44ff' });
         steps.push({ type: 'search_started', lrp_idx: d.lrp_idx, coord: d.coord, radius_m: d.radius_m });
         i++;
         break;
@@ -101,7 +101,7 @@ export function buildReplaySteps(events) {
           const nd = events[i].AStarNodeExpanded;
           if (nd.g_m > maxG) maxG = nd.g_m;
           totalNodes++;
-          batch.push({ lon: nd.lon, lat: nd.lat, g_m: nd.g_m, h_m: nd.h_m, node_id: nd.node_id });
+          batch.push({ lon: nd.lon, lat: nd.lat, g_m: nd.g_m, h_m: nd.h_m, node_id: nd.node_id, via_segment: nd.via_segment ?? null });
           i++;
           if (batch.length >= ASTAR_BATCH) {
             steps.push({ type: 'astar_batch', leg, nodes: batch });
@@ -173,6 +173,7 @@ function emptyState() {
     searchRadius:    null,    // { lon, lat, radiusM, lrpIdx }
     candidates:      [],      // { lon, lat, ctype, score, lrpIdx, segmentId, winner }
     astarNodes:      [],      // { lon, lat, gM, hM, color }
+    traversedSegs:   new Set(), // segmentIds explored during A* search; cleared at leg start
     frontier:        [],      // last FRONTIER_SIZE nodes
     currentLeg:      null,    // { leg, fromPt, toPt, fromSegId, toSegId }
     routeSegIds:     [],      // segment IDs of current best route
@@ -191,16 +192,19 @@ const FRONTIER_SIZE = 25;
 
 /** Apply one display step onto a mutable visual state. */
 function applyStep(s, step, maxGTotal) {
+  // Guard against stale refs that pre-date a type change (e.g. HMR in dev)
+  if (!(s.traversedSegs instanceof Set)) s.traversedSegs = new Set();
   s.stepType = step.type;
 
   switch (step.type) {
     case 'search_started':
       s.phase = 'candidates';
       s.searchRadius = { lon: step.coord[0], lat: step.coord[1], radiusM: step.radius_m, lrpIdx: step.lrp_idx };
-      s.statusText   = `LRP ${step.lrp_idx} — searching within ${step.radius_m.toFixed(0)} m`;
+      s.statusText   = `LRP ${step.lrp_idx + 1} — searching within ${step.radius_m.toFixed(0)} m`;
       // Clear candidates from previous LRP; reset A* state from previous legs
       s.candidates      = [];
       s.astarNodes      = [];
+      s.traversedSegs   = new Set();
       s.frontier        = [];
       s.routeSegIds   = [];
       s.routeFromSnap = null;
@@ -248,7 +252,7 @@ function applyStep(s, step, maxGTotal) {
           });
         }
       }
-      s.statusText = `LRP ${step.lrp_idx} — ${acc.length} accepted, ${rej.length} rejected`;
+      s.statusText = `LRP ${step.lrp_idx + 1} — ${acc.length} accepted, ${rej.length} rejected`;
       break;
     }
 
@@ -264,6 +268,7 @@ function applyStep(s, step, maxGTotal) {
       // Candidate search is over — clear highlights; A* nodes accumulate separately
       s.candidates       = [];
       s.astarNodes       = [];
+      s.traversedSegs    = new Map();
       s.frontier         = [];
       s.routeSegIds   = [];
       s.routeFromSnap = null;
@@ -279,6 +284,7 @@ function applyStep(s, step, maxGTotal) {
         const color = nodeColorAt(maxGTotal > 0 ? n.g_m / maxGTotal : 0);
         s.astarNodes.push({ lon: n.lon, lat: n.lat, gM: n.g_m, hM: n.h_m, color });
         if (n.g_m > s.maxG) s.maxG = n.g_m;
+        if (n.via_segment != null) s.traversedSegs.add(n.via_segment);
       }
       s.frontier = s.astarNodes.slice(-FRONTIER_SIZE);
       const last = step.nodes[step.nodes.length - 1];
@@ -326,7 +332,7 @@ function applyStep(s, step, maxGTotal) {
       s.phase     = 'complete';
       const o     = step.outcome;
       if (o.Success)        s.statusText = `✓ Complete — ${o.Success.path.length} segments`;
-      else if (o.NoCandidates) s.statusText = `✗ No candidates for LRP ${o.NoCandidates.lrp_idx}`;
+      else if (o.NoCandidates) s.statusText = `✗ No candidates for LRP ${o.NoCandidates.lrp_idx + 1}`;
       else if (o.NoRoute)   s.statusText = `✗ No route for leg ${o.NoRoute.leg + 1}`;
       break;
     }
@@ -388,6 +394,11 @@ export function stateToGeoJSON(state, geomLookup) {
   // Candidates — rendered as coloured LineStrings (green=accepted, red=rejected).
   // Coordinates are reversed for Backward traversal so direction arrows always
   // point in the direction of travel.
+  // Count candidates per segment so bidirectional pairs can be offset side-by-side.
+  const segCandCount = new Map();
+  for (const c of state.candidates) {
+    if (c.segmentId != null) segCandCount.set(c.segmentId, (segCandCount.get(c.segmentId) ?? 0) + 1);
+  }
   const candFC = {
     type: 'FeatureCollection',
     features: state.candidates.flatMap(c => {
@@ -397,10 +408,12 @@ export function stateToGeoJSON(state, geomLookup) {
       const coords = c.traversal === 'Backward'
         ? [...feat.geometry.coordinates].reverse()
         : feat.geometry.coordinates;
+      const has_counterpart = (segCandCount.get(c.segmentId) ?? 1) > 1;
       return [{
         type: 'Feature',
         geometry: { type: 'LineString', coordinates: coords },
         properties: {
+          has_counterpart,
           ctype:         c.ctype,
           lrp_idx:       c.lrpIdx,
           winner:        c.winner ?? false,
@@ -453,6 +466,16 @@ export function stateToGeoJSON(state, geomLookup) {
     })),
   };
 
+  // A* traversed edges — one LineString per explored segment
+  const traversedFC = {
+    type: 'FeatureCollection',
+    features: [...state.traversedSegs].flatMap(segId => {
+      const feat = geomLookup?.(segId);
+      if (!feat?.geometry?.coordinates) return [];
+      return [{ type: 'Feature', geometry: feat.geometry, properties: {} }];
+    }),
+  };
+
   // "From" and "to" endpoint markers for current leg
   const legFC = state.currentLeg
     ? {
@@ -464,5 +487,5 @@ export function stateToGeoJSON(state, geomLookup) {
       }
     : empty;
 
-  return { radiusFC, candFC, cloudFC, frontierFC, legFC };
+  return { radiusFC, candFC, traversedFC, cloudFC, frontierFC, legFC };
 }

@@ -118,6 +118,16 @@ pub struct RejectedCandidate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bearing_deg: Option<f64>,
     pub verdict: GateVerdict,
+    /// Whether the representative snap is at the entry endpoint.
+    pub is_at_entry: bool,
+    /// Whether the representative snap is at the exit endpoint.
+    pub is_at_exit: bool,
+    /// Arc offset (m) along the traversal-direction geometry. None for FailDirection/FailRadius.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arc_offset_m: Option<f64>,
+    /// Score of the representative snap. None for FailDirection/FailRadius (no snap computed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<CandidateScore>,
 }
 
 // ── Gate verdicts / skip reasons ─────────────────────────────────────────────

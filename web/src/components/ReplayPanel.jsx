@@ -138,18 +138,18 @@ function describeStep(step) {
   if (!step) return '—';
   switch (step.type) {
     case 'search_started':
-      return `LRP ${step.lrp_idx} — candidate search · radius ${step.radius_m.toFixed(0)} m`;
+      return `LRP ${step.lrp_idx + 1} — candidate search · radius ${step.radius_m.toFixed(0)} m`;
 
     case 'candidates_ranked': {
       const a  = (step.accepted ?? []).length;
       const rej = step.rejected ?? [];
       const sf  = step.segments_fetched ?? 0;
-      if (sf === 0) return `LRP ${step.lrp_idx} — no road segments in search area (coverage gap)`;
+      if (sf === 0) return `LRP ${step.lrp_idx + 1} — no road segments in search area (coverage gap)`;
       if (a === 0) {
         const breakdown = rejectionBreakdown(rej);
-        return `LRP ${step.lrp_idx} — 0 accepted · ${rej.length} rejected from ${sf} segments${breakdown ? ` (${breakdown})` : ''}`;
+        return `LRP ${step.lrp_idx + 1} — 0 accepted · ${rej.length} rejected from ${sf} segments${breakdown ? ` (${breakdown})` : ''}`;
       }
-      return `LRP ${step.lrp_idx} — ${a} accepted · ${rej.length} rejected from ${sf} segments`;
+      return `LRP ${step.lrp_idx + 1} — ${a} accepted · ${rej.length} rejected from ${sf} segments`;
     }
 
     case 'route_search_started':
@@ -211,7 +211,7 @@ function describeStep(step) {
     case 'decode_complete': {
       const o = step.outcome;
       if (o.Success)       return `✓ Complete · ${o.Success.path.length} segments`;
-      if (o.NoCandidates)  return `✗ No candidates for LRP ${o.NoCandidates.lrp_idx}`;
+      if (o.NoCandidates)  return `✗ No candidates for LRP ${o.NoCandidates.lrp_idx + 1}`;
       if (o.NoRoute)       return `✗ No route for leg ${o.NoRoute.leg + 1}`;
       return '✗ Decode failed';
     }

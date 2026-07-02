@@ -62,21 +62,23 @@ pub fn select_candidates(
                     });
                     accepted.push(scored);
                 }
-                EvalResult::Rejected { verdict, distance_m, point, bearing_deg, snap_evaluations } => {
+                EvalResult::Rejected { verdict, distance_m, point, bearing_deg, arc_offset_m, snap_type, score, snap_evaluations } => {
+                    let is_at_entry = matches!(snap_type, Some(SnapType::Entry));
+                    let is_at_exit  = matches!(snap_type, Some(SnapType::Exit));
                     trace.push_full(DecodeEvent::CandidateEvaluated {
                         lrp_idx,
                         segment_id: seg_id,
                         traversal: dir,
                         projection: ProjectionResult {
-                            arc_offset_m: 0.0,
+                            arc_offset_m: arc_offset_m.unwrap_or(0.0),
                             point: point.unwrap_or((0.0, 0.0)),
                             distance_m: distance_m.unwrap_or(0.0),
                             bearing_deg: bearing_deg.unwrap_or(0.0),
-                            is_at_entry: false,
-                            is_at_exit: false,
+                            is_at_entry,
+                            is_at_exit,
                         },
                         verdict: verdict.clone(),
-                        score: None,
+                        score: score.clone(),
                         snap_evaluations,
                     });
                     rejected.push(RejectedCandidate {
@@ -85,7 +87,11 @@ pub fn select_candidates(
                         distance_m,
                         point,
                         bearing_deg,
+                        arc_offset_m,
                         verdict,
+                        is_at_entry,
+                        is_at_exit,
+                        score,
                     });
                 }
             }
@@ -126,6 +132,12 @@ enum EvalResult {
         point: Option<(f64, f64)>,
         /// Bearing at the projection point. `None` for `FailDirection` and `FailRadius`.
         bearing_deg: Option<f64>,
+        /// Arc offset (m) of the representative snap along the traversal-direction geometry. `None` for early rejects.
+        arc_offset_m: Option<f64>,
+        /// Snap type of the representative (best-gate-rank) snap. `None` for early rejects.
+        snap_type: Option<SnapType>,
+        /// Score of the representative snap. `None` only for `FailDirection`/`FailRadius`.
+        score: Option<CandidateScore>,
         /// All individual snap evaluations performed (empty for early radius/direction rejects).
         snap_evaluations: Vec<SnapEvaluation>,
     },
@@ -163,6 +175,9 @@ fn evaluate_candidate(
             distance_m: None,
             point: None,
             bearing_deg: None,
+            arc_offset_m: None,
+            snap_type: None,
+            score: None,
             snap_evaluations: vec![],
         },
     };
@@ -178,6 +193,9 @@ fn evaluate_candidate(
             distance_m: Some(proj.distance_m),
             point: Some(proj.point),
             bearing_deg: None,
+            arc_offset_m: None,
+            snap_type: None,
+            score: None,
             snap_evaluations: vec![],
         };
     }
@@ -194,8 +212,12 @@ fn evaluate_candidate(
 
     let mut snaps: Vec<SnapCandidate> = Vec::with_capacity(3);
 
-    // Interior: only when the foot falls strictly inside the segment.
-    if arc > 1e-6 && arc < seg_length - 1e-6 {
+    // Interior: only when the foot falls strictly inside the segment AND outside both
+    // endpoint threshold zones.  If the projection lands within `threshold` of either
+    // endpoint we exclusively offer that endpoint snap so the correct penalty (none,
+    // wrong_endpoint, or interior) is applied — never let a near-endpoint interior snap
+    // dodge the wrong_endpoint charge by winning on a marginally smaller distance.
+    if arc > 1e-6 && arc < seg_length - 1e-6 && arc > threshold && seg_length - arc > threshold {
         snaps.push(SnapCandidate {
             snap_type: SnapType::Interior,
             arc_offset_m: arc,
@@ -260,6 +282,33 @@ fn evaluate_candidate(
         let bearing_deg = bearing_at_offset(&geom, snap.arc_offset_m, forward_on_geom);
         let excess_deg  = lrp.bearing.excess(bearing_deg);
 
+        let (is_at_entry, is_at_exit) = match snap.snap_type {
+            SnapType::Interior => (false, false),
+            SnapType::Entry    => (true,  false),
+            SnapType::Exit     => (false, true),
+        };
+
+        // Compute all score components unconditionally — scores are diagnostic even
+        // for rejected snaps, and are needed by the UI to explain why a candidate lost.
+        let distance_score = params.distance_weight
+            * (snap.distance_m / params.candidate_search_radius_m);
+        let sector_delta         = excess_deg / bucket_size;
+        let bearing_score        = params.bearing_weight * sector_delta * params.bearing_penalty_per_bucket;
+        let interior_score       = if is_at_entry || is_at_exit { 0.0 } else { params.interior_weight };
+        let wrong_raw            = match (is_last_lrp, is_at_entry, is_at_exit) {
+            (false, false, true) => 1.0, // non-last: entry is correct, exit is wrong
+            (true,  true, false) => 1.0, // last: exit is correct, entry is wrong
+            _                    => 0.0,
+        };
+        let wrong_endpoint_score = params.wrong_endpoint_weight * wrong_raw;
+        let total = distance_score + bearing_score + frc_score + fow_score
+            + interior_score + wrong_endpoint_score;
+
+        let score = CandidateScore {
+            distance_score, bearing_score, frc_score, fow_score,
+            interior_score, wrong_endpoint_score, total,
+        };
+
         // Hard gate: bearing deviation.
         if excess_deg > params.max_bearing_deviation_deg {
             snap_evals.push(SnapEvaluation {
@@ -268,7 +317,7 @@ fn evaluate_candidate(
                 point: snap.point,
                 distance_m: snap.distance_m,
                 bearing_deg,
-                score: None,
+                score: Some(score),
                 verdict: GateVerdict::FailBearing {
                     excess_deg,
                     max_deg: params.max_bearing_deviation_deg,
@@ -276,28 +325,6 @@ fn evaluate_candidate(
             });
             continue;
         }
-
-        let (is_at_entry, is_at_exit) = match snap.snap_type {
-            SnapType::Interior => (false, false),
-            SnapType::Entry    => (true,  false),
-            SnapType::Exit     => (false, true),
-        };
-
-        let distance_score = params.distance_weight
-            * (snap.distance_m / params.candidate_search_radius_m);
-
-        let sector_delta     = excess_deg / bucket_size;
-        let bearing_score    = params.bearing_weight * sector_delta * params.bearing_penalty_per_bucket;
-        let interior_score   = if is_at_entry || is_at_exit { 0.0 } else { params.interior_weight };
-        let wrong_raw        = match (is_last_lrp, is_at_entry, is_at_exit) {
-            (false, false, true) => 1.0, // non-last: entry is correct, exit is wrong
-            (true,  true, false) => 1.0, // last: exit is correct, entry is wrong
-            _                    => 0.0,
-        };
-        let wrong_endpoint_score = params.wrong_endpoint_weight * wrong_raw;
-
-        let total = distance_score + bearing_score + frc_score + fow_score
-            + interior_score + wrong_endpoint_score;
 
         // Hard gate: implausibly high total score.
         if total > params.max_candidate_score {
@@ -307,21 +334,11 @@ fn evaluate_candidate(
                 point: snap.point,
                 distance_m: snap.distance_m,
                 bearing_deg,
-                score: None,
+                score: Some(score),
                 verdict: GateVerdict::FailScore { total, max_score: params.max_candidate_score },
             });
             continue;
         }
-
-        let score = CandidateScore {
-            distance_score,
-            bearing_score,
-            frc_score,
-            fow_score,
-            interior_score,
-            wrong_endpoint_score,
-            total,
-        };
 
         let idx = snap_evals.len();
         snap_evals.push(SnapEvaluation {
@@ -348,14 +365,17 @@ fn evaluate_candidate(
             .iter()
             .max_by_key(|e| gate_rank(&e.verdict))
             .or(snap_evals.first());
-        let verdict   = rep.map_or(GateVerdict::FailDirection, |e| e.verdict.clone());
-        let distance_m = rep.map(|e| e.distance_m);
-        let point      = rep.map(|e| e.point);
-        let bearing_deg = rep.and_then(|e| match &e.verdict {
+        let verdict      = rep.map_or(GateVerdict::FailDirection, |e| e.verdict.clone());
+        let distance_m   = rep.map(|e| e.distance_m);
+        let point        = rep.map(|e| e.point);
+        let arc_offset_m = rep.map(|e| e.arc_offset_m);
+        let snap_type    = rep.map(|e| e.snap_type.clone());
+        let score        = rep.and_then(|e| e.score.clone());
+        let bearing_deg  = rep.and_then(|e| match &e.verdict {
             GateVerdict::FailBearing { .. } | GateVerdict::FailScore { .. } => Some(e.bearing_deg),
             _ => None,
         });
-        return EvalResult::Rejected { verdict, distance_m, point, bearing_deg, snap_evaluations: snap_evals };
+        return EvalResult::Rejected { verdict, distance_m, point, bearing_deg, arc_offset_m, snap_type, score, snap_evaluations: snap_evals };
     };
 
     // ── Best snap wins ────────────────────────────────────────────────────────

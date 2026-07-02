@@ -116,7 +116,7 @@ const CUSTOM_SOURCES = new Set([
   'olr-segments', 'olr-nodes', 'decoded-path', 'lrp-markers',
   'lrp-snap', 'lrp-displacement',
   'offset-uncertainty', 'lrp-bearing', 'highlighted-segment', 'trace-segment',
-  'replay-radius', 'replay-route', 'replay-candidates', 'replay-cloud', 'replay-frontier', 'replay-leg', 'replay-flash',
+  'replay-radius', 'replay-route', 'replay-traversed', 'replay-candidates', 'replay-cloud', 'replay-frontier', 'replay-leg', 'replay-flash',
   'measure-line', 'measure-points',
 ]);
 const CUSTOM_LAYER_IDS = new Set([
@@ -129,6 +129,7 @@ const CUSTOM_LAYER_IDS = new Set([
   'trace-segment-halo', 'trace-segment-line',
   'replay-radius-fill', 'replay-radius-line',
   'replay-route-casing', 'replay-route-line',
+  'replay-traversed-line',
   'replay-candidates-circle',
   'replay-cloud-circle',
   'replay-frontier-circle',
@@ -598,11 +599,12 @@ export default function MapView({ tilesBase, ready }) {
     if (!candidatePopup?.snap_lon) {
       setCandAnchor(null);
       pendingCandAnchorCoordRef.current = null;
-      // Hide direction arrows when no candidate is selected
       if (map?.getLayer('replay-candidates-arrow')) {
         map.setLayoutProperty('replay-candidates-arrow', 'visibility', 'none');
         map.setFilter('replay-candidates-arrow', null);
       }
+      if (map?.getLayer('replay-candidates-line'))
+        map.setFilter('replay-candidates-line', null);
       // Restore snap markers and displacement lines to winning-candidate positions.
       const lrps = decodeResultRef.current?.lrps ?? [];
       if (map?.getSource('lrp-snap')) {
@@ -680,13 +682,18 @@ export default function MapView({ tilesBase, ready }) {
       }
     }, 0);
 
-    // Show arrows filtered to the selected traversal direction only
+    // Show direction arrows for the selected candidate only
     if (map.getLayer('replay-candidates-arrow') && candidatePopup.segment_id != null) {
       map.setFilter('replay-candidates-arrow', ['all',
         ['==', ['get', 'segment_id'], candidatePopup.segment_id],
         ['==', ['get', 'traversal'],  candidatePopup.traversal ?? ''],
       ]);
       map.setLayoutProperty('replay-candidates-arrow', 'visibility', 'visible');
+    }
+    // Hide the replay candidate lines for this segment so the trace-highlight
+    // segment rendering isn't obscured by the replay overlay.
+    if (map.getLayer('replay-candidates-line') && candidatePopup.segment_id != null) {
+      map.setFilter('replay-candidates-line', ['!=', ['get', 'segment_id'], candidatePopup.segment_id]);
     }
     return () => clearTimeout(fallbackId);
   }, [candidatePopup]);
@@ -977,8 +984,9 @@ export default function MapView({ tilesBase, ready }) {
       const emptyFC = { type: 'FeatureCollection', features: [] };
 
       map.addSource('replay-radius',     { type: 'geojson', data: emptyFC });
-      map.addSource('replay-route',      { type: 'geojson', data: emptyFC });
-      map.addSource('replay-candidates', { type: 'geojson', data: emptyFC });
+      map.addSource('replay-traversed',         { type: 'geojson', data: emptyFC });
+      map.addSource('replay-route',             { type: 'geojson', data: emptyFC });
+      map.addSource('replay-candidates',        { type: 'geojson', data: emptyFC });
       map.addSource('replay-cloud',      { type: 'geojson', data: emptyFC });
       map.addSource('replay-frontier',   { type: 'geojson', data: emptyFC });
       map.addSource('replay-leg',        { type: 'geojson', data: emptyFC });
@@ -993,19 +1001,44 @@ export default function MapView({ tilesBase, ready }) {
         paint: { 'line-color': '#cc66ff', 'line-width': 2, 'line-opacity': 0.85, 'line-dasharray': [4, 3] },
       });
 
+      // A* traversed edges and node cloud — drawn before the route so the route always overlays them
+      map.addLayer({
+        id: 'replay-traversed-line', type: 'line', source: 'replay-traversed',
+        layout: { 'line-cap': 'butt', 'line-join': 'round' },
+        paint: {
+          'line-color':   '#cc4433',
+          'line-width':   5,
+          'line-opacity': 0.65,
+        },
+      });
+      map.addLayer({
+        id: 'replay-cloud-circle', type: 'circle', source: 'replay-cloud',
+        paint: {
+          'circle-radius':       3,
+          'circle-opacity':      0.9,
+          'circle-color':        '#6b0000',
+          'circle-stroke-width': 0,
+        },
+      });
+
       // Found route — dark casing underneath keeps it readable over any basemap colour.
       map.addLayer({
         id: 'replay-route-casing', type: 'line', source: 'replay-route',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#0f172a', 'line-width': 10, 'line-opacity': 0.75 },
+        paint: { 'line-color': '#0f172a', 'line-width': 10, 'line-opacity': 1.0 },
       });
       map.addLayer({
         id: 'replay-route-line', type: 'line', source: 'replay-route',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#16a34a', 'line-width': 6, 'line-opacity': 0.95 },
+        paint: { 'line-color': '#16a34a', 'line-width': 6, 'line-opacity': 1.0 },
       });
 
-      // Candidate segments — thick green (accepted) / thick red (rejected)
+      // Candidate segments — thick green (accepted) / thick red (rejected).
+      // Bidirectional segments (has_counterpart=true): each direction is 4 px wide and
+      // offset +2 px so the two lines touch back-to-back along the road centre.
+      // The Backward candidate's reversed coordinates make its +2 offset land on the
+      // physically opposite side, so they separate automatically.
+      // Single-direction segments (has_counterpart=false): one 8 px line centred on the road.
       map.addLayer({
         id: 'replay-candidates-line', type: 'line', source: 'replay-candidates',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
@@ -1016,14 +1049,17 @@ export default function MapView({ tilesBase, ready }) {
             '#dd2222',
           ],
           'line-width': ['case',
-            ['boolean', ['get', 'winner'], false], 7,
-            ['==', ['get', 'ctype'], 'accepted'],  5,
-            4,
+            ['boolean', ['get', 'has_counterpart'], false], 4,
+            6,
           ],
           'line-opacity': ['case',
             ['boolean', ['get', 'winner'], false], 1.0,
             ['==', ['get', 'ctype'], 'accepted'],  0.9,
             0.75,
+          ],
+          'line-offset': ['case',
+            ['boolean', ['get', 'has_counterpart'], false], 2,
+            0,
           ],
         },
       });
@@ -1042,17 +1078,6 @@ export default function MapView({ tilesBase, ready }) {
         paint: {
           'icon-color':   'white',
           'icon-opacity': 0.9,
-        },
-      });
-
-      // A* expansion cloud — pre-computed colour per node
-      map.addLayer({
-        id: 'replay-cloud-circle', type: 'circle', source: 'replay-cloud',
-        paint: {
-          'circle-radius':  3,
-          'circle-opacity': 0.7,
-          'circle-color':   ['get', 'color'],
-          'circle-stroke-width': 0,
         },
       });
 
@@ -1765,6 +1790,7 @@ export default function MapView({ tilesBase, ready }) {
 
   const replayLayerIds = [
     'replay-radius-fill', 'replay-radius-line',
+    'replay-traversed-line',
     'replay-candidates-line', 'replay-candidates-arrow',
     'replay-cloud-circle',
     'replay-frontier-circle',
@@ -1794,20 +1820,19 @@ export default function MapView({ tilesBase, ready }) {
     }
 
     const emptyFC = { type: 'FeatureCollection', features: [] };
-    const replaySources = ['replay-radius', 'replay-route', 'replay-candidates', 'replay-cloud', 'replay-frontier', 'replay-leg', 'replay-flash'];
+    const replaySources = ['replay-radius', 'replay-route', 'replay-traversed', 'replay-candidates', 'replay-cloud', 'replay-frontier', 'replay-leg', 'replay-flash'];
     const vis = showReplay && replaySteps.length > 0 ? 'visible' : 'none';
-    // Arrow layer is always hidden here; it is shown only when a candidate is selected.
+    // Arrow layer is managed separately (shown only when a candidate is selected).
     replayLayerIds.forEach(id => {
       if (id === 'replay-candidates-arrow') return;
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
     });
+    if (map.getLayer('replay-candidates-arrow'))
+      map.setLayoutProperty('replay-candidates-arrow', 'visibility', 'none');
     // Hide the full decoded path while replay is active so the per-leg highlight is unambiguous.
     if (map.getLayer('decoded-path-line')) {
       map.setLayoutProperty('decoded-path-line', 'visibility', vis === 'visible' ? 'none' : 'visible');
     }
-    if (map.getLayer('replay-candidates-arrow')) {
-      map.setLayoutProperty('replay-candidates-arrow', 'visibility', 'none');
-    };
 
     if (!showReplay || !replaySteps.length) {
       replaySources.forEach(s => { map.getSource(s)?.setData(emptyFC); });
@@ -1845,8 +1870,9 @@ export default function MapView({ tilesBase, ready }) {
 
     // ── Push GeoJSON to sources ─────────────────────────────────────────────
     const gj = stateToGeoJSON(visualState, id => getSegGeomCache().get(id));
-    map.getSource('replay-radius')     ?.setData(gj.radiusFC);
-    map.getSource('replay-candidates') ?.setData(gj.candFC);
+    map.getSource('replay-radius')            ?.setData(gj.radiusFC);
+    map.getSource('replay-candidates')        ?.setData(gj.candFC);
+    map.getSource('replay-traversed')  ?.setData(gj.traversedFC);
     map.getSource('replay-cloud')      ?.setData(gj.cloudFC);
     map.getSource('replay-frontier')   ?.setData(gj.frontierFC);
     map.getSource('replay-leg')        ?.setData(gj.legFC);
@@ -1901,10 +1927,10 @@ export default function MapView({ tilesBase, ready }) {
       try {
         map.setPaintProperty('replay-route-line',   'line-color',   '#16a34a');
         map.setPaintProperty('replay-route-line',   'line-width',    6);
-        map.setPaintProperty('replay-route-line',   'line-opacity',  0.95);
+        map.setPaintProperty('replay-route-line',   'line-opacity',  1.0);
         map.setPaintProperty('replay-route-casing', 'line-color',   '#0f172a');
         map.setPaintProperty('replay-route-casing', 'line-width',   10);
-        map.setPaintProperty('replay-route-casing', 'line-opacity',  0.75);
+        map.setPaintProperty('replay-route-casing', 'line-opacity',  1.0);
       } catch (_) {}
     }
 
@@ -1997,9 +2023,9 @@ export default function MapView({ tilesBase, ready }) {
         const swell   = Math.abs(Math.sin(phase));
         try {
           map.setPaintProperty('replay-route-line',   'line-width',   done ? 6  : 5  + 4 * swell);
-          map.setPaintProperty('replay-route-line',   'line-opacity', done ? 0.95 : 0.7 + 0.3 * swell);
+          map.setPaintProperty('replay-route-line',   'line-opacity', done ? 1.0 : 0.7 + 0.3 * swell);
           map.setPaintProperty('replay-route-casing', 'line-width',   done ? 10 : 9  + 4 * swell);
-          map.setPaintProperty('replay-route-casing', 'line-opacity', done ? 0.75 : 0.5 + 0.3 * swell);
+          map.setPaintProperty('replay-route-casing', 'line-opacity', done ? 1.0 : 0.5 + 0.3 * swell);
         } catch (_) { return; }
         if (!done) routePulseRef.current = requestAnimationFrame(animRoute);
         else routePulseRef.current = null;
@@ -2042,9 +2068,9 @@ export default function MapView({ tilesBase, ready }) {
         const swell   = Math.abs(Math.sin((elapsed / 500) * Math.PI));
         try {
           map.setPaintProperty('replay-route-line',   'line-width',   done ? 6  : 5  + 4 * swell);
-          map.setPaintProperty('replay-route-line',   'line-opacity', done ? 0.95 : 0.7 + 0.3 * swell);
+          map.setPaintProperty('replay-route-line',   'line-opacity', done ? 1.0 : 0.7 + 0.3 * swell);
           map.setPaintProperty('replay-route-casing', 'line-width',   done ? 10 : 9  + 4 * swell);
-          map.setPaintProperty('replay-route-casing', 'line-opacity', done ? 0.75 : 0.5 + 0.3 * swell);
+          map.setPaintProperty('replay-route-casing', 'line-opacity', done ? 1.0 : 0.5 + 0.3 * swell);
         } catch (_) { return; }
         if (!done) routePulseRef.current = requestAnimationFrame(animDone);
         else routePulseRef.current = null;
@@ -2105,9 +2131,9 @@ export default function MapView({ tilesBase, ready }) {
           const swell   = Math.abs(Math.sin((elapsed / 500) * Math.PI));
           try {
             map.setPaintProperty('replay-route-line',   'line-width',   done ? 6  : 5  + 4 * swell);
-            map.setPaintProperty('replay-route-line',   'line-opacity', done ? 0.85 : 0.7 + 0.3 * swell);
+            map.setPaintProperty('replay-route-line',   'line-opacity', done ? 1.0 : 0.7 + 0.3 * swell);
             map.setPaintProperty('replay-route-casing', 'line-width',   done ? 10 : 9  + 4 * swell);
-            map.setPaintProperty('replay-route-casing', 'line-opacity', done ? 0.6  : 0.5 + 0.3 * swell);
+            map.setPaintProperty('replay-route-casing', 'line-opacity', done ? 1.0 : 0.5 + 0.3 * swell);
           } catch (_) { return; }
           if (!done) routePulseRef.current = requestAnimationFrame(animFail);
           else routePulseRef.current = null;
@@ -3098,17 +3124,15 @@ function CandidatePopupBody({ p }) {
         {p.snap_lat != null &&
           <tr><td className="seg-info-key">Snap point</td><td><b style={{fontSize:'11px'}}>{Number(p.snap_lat).toFixed(6)}, {Number(p.snap_lon).toFixed(6)}</b></td></tr>}
 
-        {/* Score breakdown — accepted only */}
-        {accepted && <>
-          <tr><td colSpan={2} className="cand-section">Score <span className="cand-lower">(lower = better)</span></td></tr>
-          <tr><td className="seg-info-key">Total</td>     <td><b className="cand-score-total">{fmt(p.score_total, 4)}</b></td></tr>
-          <tr><td className="seg-info-key">Distance</td>  <td><b>{fmt(p.score_distance, 4)}</b></td></tr>
-          <tr><td className="seg-info-key">Bearing</td>   <td><b>{fmt(p.score_bearing, 4)}</b></td></tr>
-          <tr><td className="seg-info-key">FRC</td>       <td><b>{fmt(p.score_frc, 4)}</b></td></tr>
-          <tr><td className="seg-info-key">FOW</td>       <td><b>{fmt(p.score_fow, 4)}</b></td></tr>
-          <tr><td className="seg-info-key">Wrong EP</td>  <td><b>{fmt(p.score_wrong_ep, 4)}</b></td></tr>
-          <tr><td className="seg-info-key">Interior</td>  <td><b>{fmt(p.score_interior, 4)}</b></td></tr>
-        </>}
+        {/* Score breakdown */}
+        <tr><td colSpan={2} className="cand-section">Score <span className="cand-lower">(lower = better)</span></td></tr>
+        <tr><td className="seg-info-key">Total</td>     <td><b className="cand-score-total">{fmt(p.score_total, 4)}</b></td></tr>
+        <tr><td className="seg-info-key">Distance</td>  <td><b>{fmt(p.score_distance, 4)}</b></td></tr>
+        <tr><td className="seg-info-key">Bearing</td>   <td><b>{fmt(p.score_bearing, 4)}</b></td></tr>
+        <tr><td className="seg-info-key">FRC</td>       <td><b>{fmt(p.score_frc, 4)}</b></td></tr>
+        <tr><td className="seg-info-key">FOW</td>       <td><b>{fmt(p.score_fow, 4)}</b></td></tr>
+        <tr><td className="seg-info-key">Wrong EP</td>  <td><b>{fmt(p.score_wrong_ep, 4)}</b></td></tr>
+        <tr><td className="seg-info-key">Interior</td>  <td><b>{fmt(p.score_interior, 4)}</b></td></tr>
       </tbody>
     </table>
   );

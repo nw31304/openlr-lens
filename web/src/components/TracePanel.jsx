@@ -343,22 +343,44 @@ function RejectedTable({ rejected, lrpIdx, setTraceHighlight, setCandidatePopup 
               <th>Dir</th>
               <th>Dist m</th>
               <th>Bear °</th>
+              <th>Arc m</th>
+              <th title="total score (lower = better)">Score</th>
+              <th title="distance component">Dist</th>
+              <th title="bearing component">Bear</th>
+              <th title="FRC component">FRC</th>
+              <th title="FOW component">FOW</th>
+              <th title="wrong endpoint component">WEP</th>
+              <th title="interior snap penalty">INT</th>
               <th>Gate failure</th>
             </tr>
           </thead>
           <tbody>
             {rejected.map((r, i) => {
               const { label, cls } = fmtVerdict(r.verdict);
+              const rejProj = { distance_m: r.distance_m, bearing_deg: r.bearing_deg, arc_offset_m: r.arc_offset_m ?? null, is_at_entry: r.is_at_entry, is_at_exit: r.is_at_exit };
+              const s = r.score ?? null;
               return (
                 <tr key={i}>
                   <td><SegBtn segId={r.segment_id} setTraceHighlight={setTraceHighlight}
                     onSelect={() => setCandidatePopup(buildCandPopup(
                       r.segment_id, lrpIdx, r.traversal, verdictType(r.verdict), false,
-                      r.point, { distance_m: r.distance_m, bearing_deg: r.bearing_deg }, null, r.verdict
+                      r.point, rejProj, s, r.verdict
                     ))} /></td>
                   <td className="tp-dim">{r.traversal === 'Forward' ? 'Fwd' : 'Bwd'}</td>
                   <td>{r.distance_m != null ? r.distance_m.toFixed(1) : '—'}</td>
                   <td>{r.bearing_deg != null ? r.bearing_deg.toFixed(1) : '—'}</td>
+                  <td>
+                    {r.bearing_deg != null
+                      ? <>{r.arc_offset_m != null ? r.arc_offset_m.toFixed(1) : '—'}{' '}<SnapTag projection={rejProj} /></>
+                      : <span className="tp-dim">—</span>}
+                  </td>
+                  <td className="tp-score-total">{fmtScore(s?.total)}</td>
+                  <td className="tp-dim">{fmtScore(s?.distance_score)}</td>
+                  <td className="tp-dim">{fmtScore(s?.bearing_score)}</td>
+                  <td className="tp-dim">{fmtScore(s?.frc_score)}</td>
+                  <td className="tp-dim">{fmtScore(s?.fow_score)}</td>
+                  <td className="tp-dim">{fmtScore(s?.wrong_endpoint_score)}</td>
+                  <td className="tp-dim">{fmtScore(s?.interior_score)}</td>
                   <td><span className={`tp-gate-pill ${cls}`}>{label}</span></td>
                 </tr>
               );
