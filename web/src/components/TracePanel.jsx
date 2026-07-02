@@ -222,9 +222,16 @@ function buildRefSummary(openlrString, lrps, decodeResult) {
                  : decodeResult?.format === 'Tpeg'     ? 'TPEG-OLR'
                  : '(unknown)';
   const approx = decodeResult?.offsets_approximate;
+  const isPal = decodeResult?.location_type === 'PointAlongLine' ||
+                decodeResult?.location_type === 'PoiWithAccessPoint';
   const lines = ['{'];
   lines.push(`  "format": "${fmtLabel}",`);
+  lines.push(`  "location_type": "${decodeResult?.location_type ?? 'Line'}",`);
   lines.push(`  "string": "${openlrString}",`);
+  if (isPal && decodeResult?.orientation != null)
+    lines.push(`  "orientation": "${decodeResult.orientation}",`);
+  if (isPal && decodeResult?.side_of_road != null)
+    lines.push(`  "side_of_road": "${decodeResult.side_of_road}",`);
   const posOff = fmtOffset(decodeResult?.pos_offset_lb, decodeResult?.pos_offset_ub, approx);
   const negOff = fmtOffset(decodeResult?.neg_offset_lb, decodeResult?.neg_offset_ub, approx);
   if (posOff) lines.push(`  "pos_offset": ${posOff},`);

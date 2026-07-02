@@ -70,12 +70,27 @@ function fmtOffsetValue(lb, ub, approximate) {
   return approximate ? `${str} *` : str;
 }
 
+const ORIENTATION_LABEL = {
+  NoOrientation:       'No orientation',
+  FirstTowardSecond:   'First → Second',
+  SecondTowardFirst:   'Second → First',
+  BothDirections:      'Both directions',
+};
+const SIDE_OF_ROAD_LABEL = {
+  DirectlyOnOrNA: 'Directly on / N/A',
+  Right:          'Right',
+  Left:           'Left',
+  Both:           'Both sides',
+};
+
 function ReferenceSection({ decodeResult, onLrpClick }) {
   const { format, location_type, lrps, pos_offset_lb, pos_offset_ub,
-          neg_offset_lb, neg_offset_ub, offsets_approximate } = decodeResult;
+          neg_offset_lb, neg_offset_ub, offsets_approximate,
+          orientation, side_of_road } = decodeResult;
   const isV3  = format === 'TomTomV3';
   const hasPos = pos_offset_ub > 0;
   const hasNeg = neg_offset_ub > 0;
+  const isPal  = location_type === 'PointAlongLine' || location_type === 'PoiWithAccessPoint';
 
   return (
     <div className="ref-section">
@@ -84,6 +99,12 @@ function ReferenceSection({ decodeResult, onLrpClick }) {
           value={isV3 ? 'TomTomV3 (binary v3)' : 'TPEG-OLR (ISO 21219-22)'} />
         <RefRow label="Type"   value={location_type} />
         <RefRow label="LRPs"   value={lrps.length} />
+        {isPal && orientation != null && (
+          <RefRow label="Orientation" value={ORIENTATION_LABEL[orientation] ?? orientation} />
+        )}
+        {isPal && side_of_road != null && (
+          <RefRow label="Side of road" value={SIDE_OF_ROAD_LABEL[side_of_road] ?? side_of_road} />
+        )}
         {(hasPos || hasNeg) && <>
           {hasPos && <RefRow label="Pos. offset" helpKey="offset"
             value={fmtOffsetValue(pos_offset_lb, pos_offset_ub, offsets_approximate)} />}

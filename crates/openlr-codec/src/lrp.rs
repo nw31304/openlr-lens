@@ -78,53 +78,54 @@ impl SideOfRoad {
     }
 }
 
-/// Location type discriminant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum LocationType {
-    Line,
-    PointAlongLine,
-}
-
-impl Default for LocationType {
-    fn default() -> Self { LocationType::Line }
-}
-
-/// A decoded location reference: an ordered sequence of LRPs with optional PAL attributes.
+/// A fully-parsed OpenLR location reference.
+///
+/// Network-based types (Line, ClosedLine, PAL, POI) carry LRPs for map-matching.
+/// Geometry types (GeoCoordinate, Circle, Rectangle, Grid, Polygon) carry only
+/// the shape — no map-matching is needed.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct LocationReference {
-    pub lrps: Vec<Lrp>,
-    #[serde(default)]
-    pub location_type: LocationType,
-    /// Orientation — set for PointAlongLine, None for Line.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub orientation: Option<Orientation>,
-    /// Side of road — set for PointAlongLine, None for Line.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub side_of_road: Option<SideOfRoad>,
+#[serde(tag = "location_type")]
+pub enum LocationReference {
+    Line { lrps: Vec<Lrp> },
+    ClosedLine { lrps: Vec<Lrp> },
+    PointAlongLine { lrps: Vec<Lrp>, orientation: Orientation, side_of_road: SideOfRoad },
+    PoiWithAccessPoint { lrps: Vec<Lrp>, orientation: Orientation, side_of_road: SideOfRoad, poi: (f64, f64) },
+    GeoCoordinate { coord: (f64, f64) },
+    Circle { center: (f64, f64), radius_m: u32 },
+    Rectangle { lower_left: (f64, f64), upper_right: (f64, f64) },
+    Grid { lower_left: (f64, f64), upper_right: (f64, f64), n_cols: u16, n_rows: u16 },
+    Polygon { coords: Vec<(f64, f64)> },
 }
 
 impl LocationReference {
-    /// Construct a line location reference.
-    pub fn line(lrps: Vec<Lrp>) -> Self {
-        LocationReference {
-            lrps,
-            location_type: LocationType::Line,
-            orientation: None,
-            side_of_road: None,
+    /// Return the LRP slice for network-based location types; `None` for geometry types.
+    pub fn lrps(&self) -> Option<&[Lrp]> {
+        match self {
+            Self::Line { lrps }
+            | Self::ClosedLine { lrps }
+            | Self::PointAlongLine { lrps, .. }
+            | Self::PoiWithAccessPoint { lrps, .. } => Some(lrps.as_slice()),
+            _ => None,
         }
     }
 
-    /// Construct a PointAlongLine location reference.
-    pub fn point_along_line(lrps: Vec<Lrp>, orientation: Orientation, side_of_road: SideOfRoad) -> Self {
-        LocationReference {
-            lrps,
-            location_type: LocationType::PointAlongLine,
-            orientation: Some(orientation),
-            side_of_road: Some(side_of_road),
-        }
+    /// True for PointAlongLine and PoiWithAccessPoint.
+    pub fn is_point_on_line(&self) -> bool {
+        matches!(self, Self::PointAlongLine { .. } | Self::PoiWithAccessPoint { .. })
     }
 
-    pub fn is_point(&self) -> bool {
-        self.location_type == LocationType::PointAlongLine
+    /// String tag matching the serde `location_type` discriminant.
+    pub fn type_str(&self) -> &'static str {
+        match self {
+            Self::Line { .. }               => "Line",
+            Self::ClosedLine { .. }         => "ClosedLine",
+            Self::PointAlongLine { .. }     => "PointAlongLine",
+            Self::PoiWithAccessPoint { .. } => "PoiWithAccessPoint",
+            Self::GeoCoordinate { .. }      => "GeoCoordinate",
+            Self::Circle { .. }             => "Circle",
+            Self::Rectangle { .. }          => "Rectangle",
+            Self::Grid { .. }               => "Grid",
+            Self::Polygon { .. }            => "Polygon",
+        }
     }
 }

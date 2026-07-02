@@ -37,7 +37,8 @@ extern "C" {
 }
 
 use openlr_codec::{decode_v3_base64, decode_tpeg_hex, decode_tpeg_base64};
-use openlr_codec::lrp::{LocationReference, LocationType, Orientation, SideOfRoad};
+use openlr_codec::lrp::{LocationReference, Orientation, SideOfRoad};
+use openlr_engine::DecodeResult as EngineDecodeResult;
 use openlr_engine::{decode as engine_decode, decode_forced as engine_decode_forced, DecodeError, DecodeParams, Preset, prefetch_tile_keys, path_to_wkt, path_band_wkt};
 use openlr_engine::{ScoredCandidate, ProjectionResult, CandidateScore};
 use openlr_graph::{SegmentId, NodeId};
@@ -147,7 +148,7 @@ fn lrp_info_vec(
 
 /// Returned by `Decoder.decode()` as a JSON string.
 #[derive(Serialize)]
-struct DecodeResult {
+struct JsDecodeResult {
     ok: bool,
     /// "TomTomV3" or "Tpeg". Empty string on parse error.
     format: String,
@@ -195,9 +196,9 @@ struct DecodeResult {
     side_of_road: Option<String>,
 }
 
-impl DecodeResult {
+impl JsDecodeResult {
     fn err(msg: impl Into<String>) -> Self {
-        DecodeResult {
+        JsDecodeResult {
             ok: false,
             format: String::new(),
             wkt: None,
@@ -280,7 +281,10 @@ impl Decoder {
         let (loc_ref, fmt) = parse_openlr(openlr_string)
             .map_err(|e| JsValue::from_str(&e))?;
 
-        let tile_keys = prefetch_tile_keys(&loc_ref.lrps, &params, zoom);
+        let tile_keys = match loc_ref.lrps() {
+            Some(lrps) => prefetch_tile_keys(lrps, &params, zoom),
+            None => vec![],  // geometry types need no tiles
+        };
         let tiles: Vec<[u32; 3]> = tile_keys
             .iter()
             .map(|k| [k.z as u32, k.x, k.y])
@@ -319,7 +323,7 @@ impl Decoder {
     pub fn decode(&self) -> String {
         let loc_ref = match &self.location_ref {
             Some(r) => r,
-            None => return serde_json::to_string(&DecodeResult::err("call start() first")).unwrap(),
+            None => return serde_json::to_string(&JsDecodeResult::err("call start() first")).unwrap(),
         };
 
         let result = match engine_decode(loc_ref, &self.loader.graph, &self.params, self.zoom) {
@@ -397,21 +401,22 @@ impl Decoder {
                 // Per spec §7.5.2: offset byte is relative to the first-leg DNP
                 // (positive) or last-leg DNP (negative), not the total path length.
                 // The second-to-last LRP holds the last leg's DNP.
-                let n_lrps = loc_ref.lrps.len();
-                let first_leg_dnp = loc_ref.lrps.first().and_then(|l| l.dnp);
-                let last_leg_dnp  = loc_ref.lrps.get(n_lrps.saturating_sub(2)).and_then(|l| l.dnp);
+                let lrps_slice = loc_ref.lrps().unwrap_or(&[]);
+                let n_lrps = lrps_slice.len();
+                let first_leg_dnp = lrps_slice.first().and_then(|l| l.dnp);
+                let last_leg_dnp  = lrps_slice.get(n_lrps.saturating_sub(2)).and_then(|l| l.dnp);
                 let (pos_offset_lb, pos_offset_ub, pos_approx) = approximate_offset(
-                    loc_ref.lrps.first().and_then(|l| l.pos_offset_raw),
-                    loc_ref.lrps.first().and_then(|l| l.pos_offset),
+                    lrps_slice.first().and_then(|l| l.pos_offset_raw),
+                    lrps_slice.first().and_then(|l| l.pos_offset),
                     first_leg_dnp,
                 );
                 let (neg_offset_lb, neg_offset_ub, neg_approx) = approximate_offset(
-                    loc_ref.lrps.last().and_then(|l| l.neg_offset_raw),
-                    loc_ref.lrps.last().and_then(|l| l.neg_offset),
+                    lrps_slice.last().and_then(|l| l.neg_offset_raw),
+                    lrps_slice.last().and_then(|l| l.neg_offset),
                     last_leg_dnp,
                 );
-                let full_result = DecodeResult {
-                    lrps: lrp_info_vec(&loc_ref.lrps, &[], &[], &[]),
+                let full_result = JsDecodeResult {
+                    lrps: lrp_info_vec(lrps_slice, &[], &[], &[]),
                     format: self.openlr_format.to_string(),
                     trace: trace_value,
                     segments: overflow_segments,
@@ -420,14 +425,14 @@ impl Decoder {
                     neg_offset_lb,
                     neg_offset_ub,
                     offsets_approximate: pos_approx || neg_approx,
-                    ..DecodeResult::err(&error_str)
+                    ..JsDecodeResult::err(&error_str)
                 };
                 return match serde_json::to_string(&full_result) {
                     Ok(s) => s,
                     Err(e) => {
                         // LrpInfo contained a non-finite f64 — drop lrps/trace rather than panic.
                         warn(&format!("openlrlens: failure result serialisation failed ({e}); dropping lrps"));
-                        serde_json::to_string(&DecodeResult::err(&error_str)).unwrap()
+                        serde_json::to_string(&JsDecodeResult::err(&error_str)).unwrap()
                     }
                 };
             }
@@ -436,6 +441,7 @@ impl Decoder {
 
         self.build_ok_json(loc_ref, result)
     }
+
 
     /// Forced decode: bypass candidate selection and run routing with exactly the
     /// provided snap points (one per LRP).
@@ -452,18 +458,24 @@ impl Decoder {
     pub fn decode_forced(&self, snaps_json: &str) -> String {
         let loc_ref = match &self.location_ref {
             Some(r) => r,
-            None => return serde_json::to_string(&DecodeResult::err("call start() first")).unwrap(),
+            None => return serde_json::to_string(&JsDecodeResult::err("call start() first")).unwrap(),
         };
 
         let snaps: Vec<SnapDescriptor> = match serde_json::from_str(snaps_json) {
             Ok(v) => v,
             Err(e) => return serde_json::to_string(
-                &DecodeResult::err(format!("invalid snaps: {e}"))).unwrap(),
+                &JsDecodeResult::err(format!("invalid snaps: {e}"))).unwrap(),
         };
 
-        if snaps.len() != loc_ref.lrps.len() {
-            return serde_json::to_string(&DecodeResult::err(format!(
-                "expected {} snaps (one per LRP), got {}", loc_ref.lrps.len(), snaps.len()
+        let forced_lrps = match loc_ref.lrps() {
+            Some(l) => l,
+            None => return serde_json::to_string(&JsDecodeResult::err(
+                "decode_forced is not supported for geometry location types"
+            )).unwrap(),
+        };
+        if snaps.len() != forced_lrps.len() {
+            return serde_json::to_string(&JsDecodeResult::err(format!(
+                "expected {} snaps (one per LRP), got {}", forced_lrps.len(), snaps.len()
             ))).unwrap();
         }
 
@@ -504,7 +516,7 @@ impl Decoder {
             })
         }).collect::<Result<Vec<_>, String>>() {
             Ok(v)  => v,
-            Err(e) => return serde_json::to_string(&DecodeResult::err(e)).unwrap(),
+            Err(e) => return serde_json::to_string(&JsDecodeResult::err(e)).unwrap(),
         };
 
         match engine_decode_forced(loc_ref, forced, &self.loader.graph, &self.params, self.zoom) {
@@ -516,16 +528,17 @@ impl Decoder {
                 }
                 let error_str = failure.error.to_string();
                 let trace_value = failure.trace.and_then(|t| serde_json::to_value(t).ok());
-                serde_json::to_string(&DecodeResult {
-                    lrps:  lrp_info_vec(&loc_ref.lrps, &[], &[], &[]),
+                serde_json::to_string(&JsDecodeResult {
+                    lrps: lrp_info_vec(loc_ref.lrps().unwrap_or(&[]), &[], &[], &[]),
                     format: self.openlr_format.to_string(),
                     trace: trace_value,
-                    ..DecodeResult::err(&error_str)
+                    ..JsDecodeResult::err(&error_str)
                 }).unwrap()
             }
             Ok(result) => self.build_ok_json(loc_ref, result),
         }
     }
+
 
     /// Clear the stored location reference.  The loaded tile graph is kept so
     /// nearby re-decodes can reuse the cached tiles — call `reset_tiles()` too
@@ -817,11 +830,59 @@ fn approximate_offset(raw: Option<u8>, exact: Option<openlr_codec::LinearInterva
 }
 
 impl Decoder {
-    /// Build the JSON success response from a `DecodedLocation`.
-    /// Shared by `decode()` and `decode_forced()`.
-    fn build_ok_json(&self, loc_ref: &LocationReference, result: openlr_engine::DecodedLocation) -> String {
+    /// Dispatch to the appropriate JSON builder based on the engine result type.
+    fn build_ok_json(&self, loc_ref: &LocationReference, result: EngineDecodeResult) -> String {
+        match result {
+            EngineDecodeResult::GeoCoordinate { coord: (lon, lat) } =>
+                serde_json::to_string(&serde_json::json!({
+                    "ok": true, "format": self.openlr_format,
+                    "location_type": "GeoCoordinate",
+                    "point_lon": lon, "point_lat": lat,
+                    "lrps": [], "segments": [],
+                })).unwrap(),
+            EngineDecodeResult::Circle { center: (lon, lat), radius_m } =>
+                serde_json::to_string(&serde_json::json!({
+                    "ok": true, "format": self.openlr_format,
+                    "location_type": "Circle",
+                    "center_lon": lon, "center_lat": lat, "radius_m": radius_m,
+                    "lrps": [], "segments": [],
+                })).unwrap(),
+            EngineDecodeResult::Rectangle { lower_left, upper_right } =>
+                serde_json::to_string(&serde_json::json!({
+                    "ok": true, "format": self.openlr_format,
+                    "location_type": "Rectangle",
+                    "lower_left": lower_left, "upper_right": upper_right,
+                    "lrps": [], "segments": [],
+                })).unwrap(),
+            EngineDecodeResult::Grid { lower_left, upper_right, n_cols, n_rows } =>
+                serde_json::to_string(&serde_json::json!({
+                    "ok": true, "format": self.openlr_format,
+                    "location_type": "Grid",
+                    "lower_left": lower_left, "upper_right": upper_right,
+                    "n_cols": n_cols, "n_rows": n_rows,
+                    "lrps": [], "segments": [],
+                })).unwrap(),
+            EngineDecodeResult::Polygon { coords } => {
+                let json_coords: Vec<[f64; 2]> = coords.iter().map(|&(lon, lat)| [lon, lat]).collect();
+                serde_json::to_string(&serde_json::json!({
+                    "ok": true, "format": self.openlr_format,
+                    "location_type": "Polygon",
+                    "coords": json_coords,
+                    "lrps": [], "segments": [],
+                })).unwrap()
+            }
+            EngineDecodeResult::Line(decoded)
+            | EngineDecodeResult::ClosedLine(decoded)
+            | EngineDecodeResult::PointAlongLine(decoded)
+            | EngineDecodeResult::PoiWithAccessPoint(decoded) =>
+                self.build_network_ok_json(loc_ref, decoded),
+        }
+    }
+
+    /// Build the JSON success response for a network (LRP-based) decode.
+    fn build_network_ok_json(&self, loc_ref: &LocationReference, result: openlr_engine::DecodedLocation) -> String {
         let lrps = lrp_info_vec(
-            &loc_ref.lrps,
+            loc_ref.lrps().unwrap_or(&[]),
             &result.lrp_snap_points,
             &result.lrp_snap_is_endpoint,
             &result.lrp_snap_distances_m,
@@ -908,11 +969,7 @@ impl Decoder {
 
         let trace_value = result.trace.and_then(|t| serde_json::to_value(t).ok());
 
-        let location_type = if loc_ref.location_type == LocationType::PointAlongLine {
-            "PointAlongLine".to_string()
-        } else {
-            "Line".to_string()
-        };
+        let location_type = loc_ref.type_str().to_string();
         let (point_lon, point_lat) = result.point_coord
             .map(|(lon, lat)| (Some(lon), Some(lat)))
             .unwrap_or((None, None));
@@ -929,7 +986,7 @@ impl Decoder {
             SideOfRoad::Both           => "Both",
         }.to_string());
 
-        serde_json::to_string(&DecodeResult {
+        serde_json::to_string(&JsDecodeResult {
             ok: true,
             format: self.openlr_format.to_string(),
             wkt,

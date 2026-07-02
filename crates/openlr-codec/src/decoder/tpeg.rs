@@ -150,7 +150,7 @@ pub fn decode_tpeg(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
         pos_offset_raw: None, neg_offset_raw: None,
     });
 
-    Ok(LocationReference::line(lrps))
+    Ok(LocationReference::Line { lrps })
 }
 
 pub fn decode_tpeg_hex(s: &str) -> Result<LocationReference, DecodeError> {
@@ -326,9 +326,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(loc.lrps.len(), 2);
+        let lrps = loc.lrps().unwrap();
+        assert_eq!(lrps.len(), 2);
 
-        let l0 = &loc.lrps[0];
+        let l0 = &lrps[0];
         assert!((l0.coord.0 - 5.724_359_750_747_681).abs() < 1e-9);
         assert!((l0.coord.1 - 51.799_324_750_900_27).abs() < 1e-9);
         assert_eq!(l0.frc, 6);
@@ -341,7 +342,7 @@ mod tests {
         assert_eq!(l0.pos_offset.map(|i| i.lb as u64), Some(15));
         assert!(l0.neg_offset.is_none());
 
-        let l1 = &loc.lrps[1];
+        let l1 = &lrps[1];
         assert!((l1.coord.0 - 5.724_229_750_747_68).abs() < 1e-9);
         assert!((l1.coord.1 - 51.799_354_750_900_27).abs() < 1e-9);
         assert_eq!(l1.frc, 6);
@@ -363,9 +364,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(loc.lrps.len(), 4);
+        let lrps = loc.lrps().unwrap();
+        assert_eq!(lrps.len(), 4);
 
-        let l0 = &loc.lrps[0];
+        let l0 = &lrps[0];
         assert!((l0.coord.0 - 11.584_514_379_501_343).abs() < 1e-9);
         assert!((l0.coord.1 - 48.177_505_731_582_64).abs() < 1e-9);
         assert_eq!(l0.frc, 1);
@@ -375,7 +377,7 @@ mod tests {
         assert_eq!(l0.lfrcnp, Some(1));
         assert_eq!(l0.dnp.map(|i| i.lb as u64), Some(743));
 
-        let l1 = &loc.lrps[1];
+        let l1 = &lrps[1];
         assert!((l1.coord.0 - 11.593_614_379_501_343).abs() < 1e-9);
         assert!((l1.coord.1 - 48.175_195_731_582_64).abs() < 1e-9);
         assert_eq!(l1.frc, 1);
@@ -385,7 +387,7 @@ mod tests {
         assert_eq!(l1.lfrcnp, Some(1));
         assert_eq!(l1.dnp.map(|i| i.lb as u64), Some(3144));
 
-        let l2 = &loc.lrps[2];
+        let l2 = &lrps[2];
         assert!((l2.coord.0 - 11.611_284_379_501_344).abs() < 1e-9);
         assert!((l2.coord.1 - 48.154_275_731_582_64).abs() < 1e-9);
         assert_eq!(l2.frc, 1);
@@ -395,7 +397,7 @@ mod tests {
         assert_eq!(l2.lfrcnp, Some(1));
         assert_eq!(l2.dnp.map(|i| i.lb as u64), Some(1969));
 
-        let l3 = &loc.lrps[3];
+        let l3 = &lrps[3];
         assert!((l3.coord.0 - 11.614_564_379_501_344).abs() < 1e-9);
         assert!((l3.coord.1 - 48.137_965_731_582_646).abs() < 1e-9);
         assert_eq!(l3.frc, 1);
@@ -405,8 +407,8 @@ mod tests {
         assert!(l3.lfrcnp.is_none());
         assert!(l3.dnp.is_none());
 
-        assert_eq!(loc.lrps[0].pos_offset.map(|i| i.lb as u64), Some(454));
-        assert_eq!(loc.lrps[3].neg_offset.map(|i| i.lb as u64), Some(85));
+        assert_eq!(lrps[0].pos_offset.map(|i| i.lb as u64), Some(454));
+        assert_eq!(lrps[3].neg_offset.map(|i| i.lb as u64), Some(85));
     }
 
     // ── Error paths ──────────────────────────────────────────────────────────

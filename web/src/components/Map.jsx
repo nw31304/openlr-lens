@@ -117,7 +117,7 @@ const CUSTOM_SOURCES = new Set([
   'lrp-snap', 'lrp-displacement',
   'offset-uncertainty', 'lrp-bearing', 'highlighted-segment', 'trace-segment',
   'replay-radius', 'replay-route', 'replay-traversed', 'replay-candidates', 'replay-cloud', 'replay-frontier', 'replay-leg', 'replay-flash',
-  'measure-line', 'measure-points',
+  'measure-line', 'measure-points', 'pal-point', 'pal-pulse',
 ]);
 const CUSTOM_LAYER_IDS = new Set([
   'olr-frc0','olr-frc1','olr-frc2','olr-frc3','olr-frc4','olr-frc5','olr-frc6','olr-frc7',
@@ -136,6 +136,7 @@ const CUSTOM_LAYER_IDS = new Set([
   'replay-leg-from', 'replay-leg-to',
   'replay-flash-ring',
   'measure-line-layer', 'measure-points-layer',
+  'pal-point-layer', 'pal-pulse-ring',
 ]);
 
 const FRC_COLOR = ['#e8002d', '#ff7700', '#e8c800', '#00aa44',
@@ -484,6 +485,7 @@ export default function MapView({ tilesBase, ready }) {
   const flashAnimRef    = useRef(null);   // rAF handle for sonar-ping fade animation
   const routePulseRef   = useRef(null);   // rAF handle for route-found pulse animation
   const decodePulseRef  = useRef(null);   // rAF handle for post-decode green→cyan fade animation
+  const palPulseRef     = useRef(null);   // rAF handle for PAL point pulsing ring
   const candPanelRef        = useRef(null);
   const candidatePopupRef   = useRef(null);
   const capturePopupRef     = useRef(null);
@@ -1149,11 +1151,24 @@ export default function MapView({ tilesBase, ready }) {
       map.addLayer({
         id: 'pal-point-layer', type: 'circle', source: 'pal-point',
         paint: {
-          'circle-radius':       9,
+          'circle-radius':       7,
           'circle-color':        '#ff6b35',
           'circle-stroke-color': '#ffffff',
           'circle-stroke-width': 2.5,
           'circle-opacity':      0.9,
+        },
+      });
+      // Pulsing ring — driven by rAF in the decode-result effect.
+      map.addSource('pal-pulse', { type: 'geojson', data: emptyFC2 });
+      map.addLayer({
+        id: 'pal-pulse-ring', type: 'circle', source: 'pal-pulse',
+        paint: {
+          'circle-radius':         10,
+          'circle-color':          'transparent',
+          'circle-stroke-width':   2.5,
+          'circle-stroke-color':   '#ff6b35',
+          'circle-stroke-opacity': 0,
+          'circle-opacity':        0,
         },
       });
 
@@ -1213,6 +1228,7 @@ export default function MapView({ tilesBase, ready }) {
       if (frontierPulseRef.current) { cancelAnimationFrame(frontierPulseRef.current); frontierPulseRef.current = null; }
       if (routePulseRef.current)    { cancelAnimationFrame(routePulseRef.current);    routePulseRef.current    = null; }
       if (flashAnimRef.current)     { cancelAnimationFrame(flashAnimRef.current);     flashAnimRef.current     = null; }
+      if (palPulseRef.current)      { cancelAnimationFrame(palPulseRef.current);      palPulseRef.current      = null; }
       map.remove();
       mapRef.current = null;
     };
@@ -2204,6 +2220,14 @@ export default function MapView({ tilesBase, ready }) {
     const displSource       = map.getSource('lrp-displacement');
     const uncertaintySource = map.getSource('offset-uncertainty');
     const palSource         = map.getSource('pal-point');
+    const palPulseSource    = map.getSource('pal-pulse');
+
+    // Cancel any in-progress PAL pulse from a previous decode.
+    if (palPulseRef.current) { cancelAnimationFrame(palPulseRef.current); palPulseRef.current = null; }
+    if (palPulseSource && map.getLayer('pal-pulse-ring')) {
+      try { map.setPaintProperty('pal-pulse-ring', 'circle-stroke-opacity', 0); } catch (_) {}
+      palPulseSource.setData({ type: 'FeatureCollection', features: [] });
+    }
 
     const emptyFC = { type: 'FeatureCollection', features: [] };
     if (!decodeResult) {
@@ -2295,7 +2319,7 @@ export default function MapView({ tilesBase, ready }) {
     // ── PointAlongLine result point ───────────────────────────────────────────
     if (decodeResult.ok && decodeResult.location_type === 'PointAlongLine' &&
         decodeResult.point_lon != null && decodeResult.point_lat != null) {
-      palSource?.setData({
+      const palPointFC = {
         type: 'FeatureCollection',
         features: [{
           type: 'Feature',
@@ -2305,40 +2329,64 @@ export default function MapView({ tilesBase, ready }) {
             side_of_road: decodeResult.side_of_road,
           },
         }],
-      });
+      };
+      palSource?.setData(palPointFC);
+      palPulseSource?.setData(palPointFC);
+
+      // Two sonar-ping pulses over 2 s, then stop.
+      if (palPulseSource && map.getLayer('pal-pulse-ring')) {
+        const TOTAL_MS = 2000, CYCLE_MS = 1000;
+        const t0 = performance.now();
+        const animPalPulse = (now) => {
+          if (!map.getLayer('pal-pulse-ring')) { palPulseRef.current = null; return; }
+          const elapsed = now - t0;
+          if (elapsed >= TOTAL_MS) {
+            try { map.setPaintProperty('pal-pulse-ring', 'circle-stroke-opacity', 0); } catch (_) {}
+            palPulseSource.setData({ type: 'FeatureCollection', features: [] });
+            palPulseRef.current = null;
+            return;
+          }
+          const p = (elapsed % CYCLE_MS) / CYCLE_MS;
+          try {
+            map.setPaintProperty('pal-pulse-ring', 'circle-radius',         8 + 24 * p);
+            map.setPaintProperty('pal-pulse-ring', 'circle-stroke-opacity', 0.85 * (1 - p));
+          } catch (_) { palPulseRef.current = null; return; }
+          palPulseRef.current = requestAnimationFrame(animPalPulse);
+        };
+        palPulseRef.current = requestAnimationFrame(animPalPulse);
+      }
     } else {
       palSource?.setData(emptyFC);
     }
 
     // ── Fit camera — always include all LRP positions AND the decoded path ──────
+    const isPalDecode = decodeResult.ok && decodeResult.location_type === 'PointAlongLine' &&
+                        decodeResult.point_lon != null && decodeResult.point_lat != null;
     const lrpCoords = lrps.map(l => [l.lon, l.lat]);
     const fitCoords = [
       ...lrpCoords,
       ...(wktCoords ?? []),
-      ...(decodeResult.ok && decodeResult.location_type === 'PointAlongLine' &&
-          decodeResult.point_lon != null
-        ? [[decodeResult.point_lon, decodeResult.point_lat]]
-        : []),
     ];
 
     // Cancel any in-progress post-decode fade
     if (decodePulseRef.current) { cancelAnimationFrame(decodePulseRef.current); decodePulseRef.current = null; }
 
-    if (fitCoords.length > 0) {
+    if (isPalDecode) {
+      // Center on the decoded point so it's immediately prominent.
+      requestAnimationFrame(() => {
+        map.flyTo({ center: [decodeResult.point_lon, decodeResult.point_lat], zoom: Math.max(map.getZoom(), 16), duration: 600 });
+      });
+    } else if (fitCoords.length > 0) {
       const lngs = fitCoords.map(c => c[0]);
       const lats = fitCoords.map(c => c[1]);
       const bounds = [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]];
-      // Defer one frame so MapLibre has processed the setData calls first
       requestAnimationFrame(() => {
         map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 17 });
-        // After the camera settles, run the green pulse → cyan fade on the decoded path.
         if (decodeResult?.ok) {
           map.once('moveend', () => {
             if (!map.getLayer('decoded-path-line')) return;
-            // Phase 1: 3 s green pulse (matching replay route_found animation)
-            // Phase 2: 1.5 s colour/width fade from green → normal cyan
-            const GREEN = [22, 163, 74];   // #16a34a
-            const CYAN  = [0, 212, 255];   // #00d4ff
+            const GREEN = [22, 163, 74];
+            const CYAN  = [0, 212, 255];
             const lerpRgb = (a, b, t) =>
               `rgb(${Math.round(a[0]+(b[0]-a[0])*t)},${Math.round(a[1]+(b[1]-a[1])*t)},${Math.round(a[2]+(b[2]-a[2])*t)})`;
             const PULSE_MS = 1500, FADE_MS = 1500;
@@ -2356,7 +2404,7 @@ export default function MapView({ tilesBase, ready }) {
                 } else if (elapsed < PULSE_MS + FADE_MS) {
                   const t = (elapsed - PULSE_MS) / FADE_MS;
                   map.setPaintProperty('decoded-path-line', 'line-color',   lerpRgb(GREEN, CYAN, t));
-                  map.setPaintProperty('decoded-path-line', 'line-width',   9 - 4 * t);   // 9 → 5
+                  map.setPaintProperty('decoded-path-line', 'line-width',   9 - 4 * t);
                   map.setPaintProperty('decoded-path-line', 'line-opacity', 0.9);
                   decodePulseRef.current = requestAnimationFrame(anim);
                 } else {

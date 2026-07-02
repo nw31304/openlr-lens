@@ -18,7 +18,7 @@ pub use wkt::{path_to_wkt, path_band_wkt};
 use std::collections::HashMap;
 
 use openlr_codec::interval::LinearInterval;
-use openlr_codec::lrp::{LocationReference, LocationType, Orientation, SideOfRoad, Lrp};
+use openlr_codec::lrp::{LocationReference, Orientation, SideOfRoad, Lrp};
 use openlr_graph::{Graph, NodeId, SegmentId, TileKey};
 
 use astar::find_route;
@@ -69,6 +69,34 @@ pub struct DecodedLocation {
     pub side_of_road: Option<SideOfRoad>,
 }
 
+/// The result of a successful decode, parameterised by location type.
+///
+/// Network-based types (Line, ClosedLine, PAL, POI) wrap a `DecodedLocation`.
+/// Geometry types carry only the shape — no map-matching was performed.
+#[derive(Debug, Clone)]
+pub enum DecodeResult {
+    Line(DecodedLocation),
+    ClosedLine(DecodedLocation),
+    PointAlongLine(DecodedLocation),
+    PoiWithAccessPoint(DecodedLocation),
+    GeoCoordinate { coord: (f64, f64) },
+    Circle { center: (f64, f64), radius_m: u32 },
+    Rectangle { lower_left: (f64, f64), upper_right: (f64, f64) },
+    Grid { lower_left: (f64, f64), upper_right: (f64, f64), n_cols: u16, n_rows: u16 },
+    Polygon { coords: Vec<(f64, f64)> },
+}
+
+impl DecodeResult {
+    /// Return the `DecodedLocation` for network-based results; `None` for geometry types.
+    pub fn as_network(&self) -> Option<&DecodedLocation> {
+        match self {
+            Self::Line(d) | Self::ClosedLine(d)
+            | Self::PointAlongLine(d) | Self::PoiWithAccessPoint(d) => Some(d),
+            _ => None,
+        }
+    }
+}
+
 /// Decode failure.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum DecodeError {
@@ -114,9 +142,19 @@ pub fn decode(
     graph: &Graph,
     params: &DecodeParams,
     zoom: u8,
-) -> Result<DecodedLocation, DecodeFailure> {
-    let lrps = loc_ref.lrps.as_slice();
-    let is_pal = loc_ref.location_type == LocationType::PointAlongLine;
+) -> Result<DecodeResult, DecodeFailure> {
+    // Geometry types need no map-matching — pass through immediately.
+    let (lrps, is_pal, pal_orientation, pal_side_of_road) = match loc_ref {
+        LocationReference::Line { lrps } =>
+            (lrps.as_slice(), false, None::<Orientation>, None::<SideOfRoad>),
+        LocationReference::ClosedLine { lrps } =>
+            (lrps.as_slice(), false, None, None),
+        LocationReference::PointAlongLine { lrps, orientation, side_of_road } =>
+            (lrps.as_slice(), true, Some(*orientation), Some(*side_of_road)),
+        LocationReference::PoiWithAccessPoint { lrps, orientation, side_of_road, .. } =>
+            (lrps.as_slice(), true, Some(*orientation), Some(*side_of_road)),
+        _ => return Ok(geometry_to_result(loc_ref)),
+    };
     let mut trace = if params.trace_level != TraceLevel::Off {
         Some(Trace::new(params.clone()))
     } else {
@@ -334,7 +372,7 @@ pub fn decode(
     let (point_coord, orientation, side_of_road) = if is_pal {
         let dist = first_lrp_arc_m + pos_offset.map_or(0.0, |i| i.lb);
         let pt = wkt::point_at_path_distance(&path, dist, first_seg_traversal, graph);
-        (pt, loc_ref.orientation, loc_ref.side_of_road)
+        (pt, pal_orientation, pal_side_of_road)
     } else {
         (None, None, None)
     };
@@ -349,14 +387,40 @@ pub fn decode(
         t.push_summary(DecodeEvent::DecodeComplete(outcome));
     }
 
-    Ok(DecodedLocation {
+    let decoded = DecodedLocation {
         path, pos_offset, neg_offset,
         first_lrp_arc_m, last_lrp_arc_m,
         first_seg_traversal, last_seg_traversal,
         lrp_snap_points, lrp_snap_is_endpoint, lrp_snap_distances_m,
         trace,
         point_coord, orientation, side_of_road,
+    };
+
+    Ok(match loc_ref {
+        LocationReference::Line { .. }               => DecodeResult::Line(decoded),
+        LocationReference::ClosedLine { .. }         => DecodeResult::ClosedLine(decoded),
+        LocationReference::PointAlongLine { .. }     => DecodeResult::PointAlongLine(decoded),
+        LocationReference::PoiWithAccessPoint { .. } => DecodeResult::PoiWithAccessPoint(decoded),
+        _ => unreachable!("geometry types handled above"),
     })
+}
+
+// ── Geometry pass-through ─────────────────────────────────────────────────────
+
+fn geometry_to_result(loc_ref: &LocationReference) -> DecodeResult {
+    match loc_ref {
+        LocationReference::GeoCoordinate { coord } =>
+            DecodeResult::GeoCoordinate { coord: *coord },
+        LocationReference::Circle { center, radius_m } =>
+            DecodeResult::Circle { center: *center, radius_m: *radius_m },
+        LocationReference::Rectangle { lower_left, upper_right } =>
+            DecodeResult::Rectangle { lower_left: *lower_left, upper_right: *upper_right },
+        LocationReference::Grid { lower_left, upper_right, n_cols, n_rows } =>
+            DecodeResult::Grid { lower_left: *lower_left, upper_right: *upper_right, n_cols: *n_cols, n_rows: *n_rows },
+        LocationReference::Polygon { coords } =>
+            DecodeResult::Polygon { coords: coords.clone() },
+        _ => unreachable!("called with non-geometry type"),
+    }
 }
 
 // ── Per-combination routing attempt ──────────────────────────────────────────
@@ -542,11 +606,20 @@ pub fn decode_forced(
     graph: &Graph,
     params: &DecodeParams,
     zoom: u8,
-) -> Result<DecodedLocation, DecodeFailure> {
-    let lrps = loc_ref.lrps.as_slice();
+) -> Result<DecodeResult, DecodeFailure> {
+    let (lrps, is_pal, pal_orientation, pal_side_of_road) = match loc_ref {
+        LocationReference::Line { lrps } =>
+            (lrps.as_slice(), false, None::<Orientation>, None::<SideOfRoad>),
+        LocationReference::ClosedLine { lrps } =>
+            (lrps.as_slice(), false, None, None),
+        LocationReference::PointAlongLine { lrps, orientation, side_of_road } =>
+            (lrps.as_slice(), true, Some(*orientation), Some(*side_of_road)),
+        LocationReference::PoiWithAccessPoint { lrps, orientation, side_of_road, .. } =>
+            (lrps.as_slice(), true, Some(*orientation), Some(*side_of_road)),
+        _ => return Ok(geometry_to_result(loc_ref)),
+    };
     let n_lrps = lrps.len();
     assert_eq!(forced_snaps.len(), n_lrps, "one snap required per LRP");
-    let is_pal = loc_ref.location_type == LocationType::PointAlongLine;
 
     let mut trace = if params.trace_level != TraceLevel::Off {
         Some(Trace::new(params.clone()))
@@ -646,7 +719,7 @@ pub fn decode_forced(
     let (point_coord, orientation, side_of_road) = if is_pal {
         let dist = first_lrp_arc_m + pos_offset.map_or(0.0, |i| i.lb);
         let pt = wkt::point_at_path_distance(&path, dist, first_seg_traversal, graph);
-        (pt, loc_ref.orientation, loc_ref.side_of_road)
+        (pt, pal_orientation, pal_side_of_road)
     } else {
         (None, None, None)
     };
@@ -656,13 +729,21 @@ pub fn decode_forced(
         t.push_summary(DecodeEvent::DecodeComplete(outcome));
     }
 
-    Ok(DecodedLocation {
+    let decoded = DecodedLocation {
         path, pos_offset, neg_offset,
         first_lrp_arc_m, last_lrp_arc_m,
         first_seg_traversal, last_seg_traversal,
         lrp_snap_points, lrp_snap_is_endpoint, lrp_snap_distances_m,
         trace,
         point_coord, orientation, side_of_road,
+    };
+
+    Ok(match loc_ref {
+        LocationReference::Line { .. }               => DecodeResult::Line(decoded),
+        LocationReference::ClosedLine { .. }         => DecodeResult::ClosedLine(decoded),
+        LocationReference::PointAlongLine { .. }     => DecodeResult::PointAlongLine(decoded),
+        LocationReference::PoiWithAccessPoint { .. } => DecodeResult::PoiWithAccessPoint(decoded),
+        _ => unreachable!("geometry types handled above"),
     })
 }
 
@@ -670,7 +751,7 @@ pub fn decode_forced(
 mod tests {
     use super::*;
     use openlr_codec::{CircularInterval, LinearInterval};
-    use openlr_codec::lrp::{LocationReference, LocationType, Orientation, SideOfRoad, Lrp};
+    use openlr_codec::lrp::{LocationReference, Lrp};
     use openlr_graph::{Direction, Graph, NetworkNode, NetworkSegment, NodeId, SegmentId};
 
     fn node(id: u32, lon: f64, lat: f64) -> NetworkNode {
@@ -716,7 +797,7 @@ mod tests {
         //
         // Each LRP position unambiguously matches exactly one segment because
         // the other segments are too far or face the wrong direction.
-        let loc_ref = LocationReference::line(vec![
+        let loc_ref = LocationReference::Line { lrps: vec![
                 Lrp {
                     coord: (0.0005, 0.000),
                     bearing: CircularInterval { lb_deg: 75.0,  ub_deg: 105.0  }, // east
@@ -743,14 +824,15 @@ mod tests {
                     pos_offset: None, neg_offset: None,
                     pos_offset_raw: None, neg_offset_raw: None,
                 },
-            ]);
+            ]};
 
         let mut params = DecodeParams::preset(Preset::Permissive);
         params.trace_level = TraceLevel::Off;
 
         let result = decode(&loc_ref, &g, &params, 12).expect("decode failed");
+        let decoded = result.as_network().expect("expected network result");
         assert_eq!(
-            result.path,
+            decoded.path,
             vec![SegmentId(1), SegmentId(2), SegmentId(3)],
             "path should be [A, B, C] with B (junction) appearing exactly once",
         );

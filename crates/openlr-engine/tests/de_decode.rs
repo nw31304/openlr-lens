@@ -121,12 +121,13 @@ fn decode_de_reference() {
 
     let loc_ref = decode_v3_base64("CwV1BCHeEDv1BQEj/3s7WiY=")
         .expect("v3 parse failed");
-    println!("LRP0 coord: {:?}", loc_ref.lrps[0].coord);
-    println!("LRP0 bearing: {:?}", loc_ref.lrps[0].bearing);
-    println!("LRP0 frc={} fow={}", loc_ref.lrps[0].frc, loc_ref.lrps[0].fow);
+    let lrps = loc_ref.lrps().expect("expected network location type");
+    println!("LRP0 coord: {:?}", lrps[0].coord);
+    println!("LRP0 bearing: {:?}", lrps[0].bearing);
+    println!("LRP0 frc={} fow={}", lrps[0].frc, lrps[0].fow);
 
     let params = DecodeParams::preset(Preset::Permissive);
-    let tile_keys = prefetch_tile_keys(&loc_ref.lrps, &params, 12);
+    let tile_keys = prefetch_tile_keys(lrps, &params, 12);
     println!("Fetching {} tiles", tile_keys.len());
 
     let mut loader = TileLoader::new();
@@ -147,7 +148,10 @@ fn decode_de_reference() {
 
     let result = decode(&loc_ref, &loader.graph, &params, 12);
     match result {
-        Ok(r)  => println!("DECODE OK: {} segments in path", r.path.len()),
+        Ok(r)  => {
+            let n_segs = r.as_network().map(|d| d.path.len()).unwrap_or(0);
+            println!("DECODE OK: {n_segs} segments in path");
+        }
         Err(e) => println!("DECODE ERROR: {e}"),
     }
 }
