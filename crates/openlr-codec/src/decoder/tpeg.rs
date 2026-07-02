@@ -1,5 +1,5 @@
 use crate::{CircularInterval, LinearInterval};
-use crate::lrp::{LocationReference, Lrp};
+use crate::lrp::{LocationReference, Lrp, Orientation, SideOfRoad};
 use super::DecodeError;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -9,9 +9,10 @@ const TPEG_BEARING_FACTOR: f64 = 360.0 / 256.0; // 256 sectors ≈ 1.40625° eac
 // ── Public entry points ────────────────────────────────────────────────────────
 
 pub fn decode_tpeg(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
-    // Outer container: [0x08][lengthComp][lengthAttr][version][location_type=0x00]
-    //                   [inner_len][inner_attr][first_lrp_data...]
-    // The Python reference validates: bytes[0] == 0x08 and len(bytes) == bytes[1] + 2.
+    // Wire layout (all practical messages have lengths < 128, so MB fields are 1 byte):
+    //   [0x08][comp_len_MB][attr_len_MB=0x01][version=0x10][loc_type][inner_comp_len_MB][inner_attr_len_MB][attrs...]
+    // bytes[4] = inner component id = location type (0=Line, 2=PAL, 3=POI, …)
+    // bytes[7..] = attribute bytes of the inner location-reference component.
     if bytes.len() < 7 {
         return Err(DecodeError::TooShort { min: 7, got: bytes.len() });
     }
@@ -23,17 +24,19 @@ pub fn decode_tpeg(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
         return Err(DecodeError::LengthMismatch { expected: expected_len, got: bytes.len() });
     }
 
-    // bytes[4] = location_type; only LinearLocationReference (0x00) supported for v1.
     let location_type = bytes[4];
-    if location_type != 0x00 {
-        return Err(DecodeError::InvalidLocationType(location_type));
+    // Attribute bytes of the inner location-reference component start at byte 7.
+    const ATTR_START: usize = 7;
+    match location_type {
+        0x00 => decode_tpeg_line(bytes, ATTR_START),
+        0x02 => decode_tpeg_pal(bytes, ATTR_START),
+        _    => Err(DecodeError::InvalidLocationType(location_type)),
     }
+}
 
-    // Skip outer header (5 bytes: id + len + attrs + version + loc_type)
-    // and inner LinearLocationReference header (3 bytes: id + len + attrs).
-    // First LRP AbsoluteGeoCoordinate starts at byte 7.
-    let mut pos = 7_usize;
+// ── Line location ──────────────────────────────────────────────────────────────
 
+fn decode_tpeg_line(bytes: &[u8], mut pos: usize) -> Result<LocationReference, DecodeError> {
     // ── First LRP (absolute coords) ──────────────────────────────────────────
     if pos + 7 > bytes.len() {
         return Err(DecodeError::TooShort { min: pos + 7, got: bytes.len() });
@@ -151,6 +154,78 @@ pub fn decode_tpeg(bytes: &[u8]) -> Result<LocationReference, DecodeError> {
     });
 
     Ok(LocationReference::Line { lrps })
+}
+
+// ── PointAlongLine location ────────────────────────────────────────────────────
+
+fn decode_tpeg_pal(bytes: &[u8], mut pos: usize) -> Result<LocationReference, DecodeError> {
+    // First LRP (absolute coords + LP + PP)
+    if pos + 7 > bytes.len() {
+        return Err(DecodeError::TooShort { min: pos + 7, got: bytes.len() });
+    }
+    let lon0 = decode_abs24(bytes[pos], bytes[pos + 1], bytes[pos + 2]);
+    let lat0 = decode_abs24(bytes[pos + 3], bytes[pos + 4], bytes[pos + 5]);
+    pos += 7;
+
+    let (bearing0, frc0, fow0, new_pos) = parse_lp(bytes, pos)?;
+    pos = new_pos;
+    let (lfrcnp0, dnp0, new_pos) = parse_pp(bytes, pos)?;
+    pos = new_pos;
+
+    // Last LRP (relative coords + LP only — no PP for the last LRP)
+    if pos + 5 > bytes.len() {
+        return Err(DecodeError::TooShort { min: pos + 5, got: bytes.len() });
+    }
+    let last_lon = decode_rel16(bytes[pos], bytes[pos + 1], lon0);
+    let last_lat = decode_rel16(bytes[pos + 2], bytes[pos + 3], lat0);
+    pos += 5;
+
+    let (bearing_last, frc_last, fow_last, new_pos) = parse_lp(bytes, pos)?;
+    pos = new_pos;
+
+    // PAL-specific: side_of_road (1) + orientation (1) + selector (1)
+    if pos + 3 > bytes.len() {
+        return Err(DecodeError::TooShort { min: pos + 3, got: bytes.len() });
+    }
+    let side_of_road = SideOfRoad::from_u8(bytes[pos]);
+    let orientation  = Orientation::from_u8(bytes[pos + 1]);
+    let selector     = bytes[pos + 2];
+    pos += 3;
+
+    // Optional positive offset (bit 0x40 of selector)
+    let pos_offset = if selector & 0x40 != 0 {
+        let (m, _) = decode_mb(bytes, pos)?;
+        Some(LinearInterval::point(m as f64))
+    } else {
+        None
+    };
+
+    let lrps = vec![
+        Lrp {
+            coord:      (lon0, lat0),
+            bearing:    bearing0,
+            frc:        frc0,
+            fow:        fow0,
+            lfrcnp:     Some(lfrcnp0),
+            dnp:        Some(dnp0),
+            pos_offset,
+            neg_offset: None,
+            pos_offset_raw: None, neg_offset_raw: None,
+        },
+        Lrp {
+            coord:      (last_lon, last_lat),
+            bearing:    bearing_last,
+            frc:        frc_last,
+            fow:        fow_last,
+            lfrcnp:     None,
+            dnp:        None,
+            pos_offset: None,
+            neg_offset: None,
+            pos_offset_raw: None, neg_offset_raw: None,
+        },
+    ];
+
+    Ok(LocationReference::PointAlongLine { lrps, orientation, side_of_road })
 }
 
 pub fn decode_tpeg_hex(s: &str) -> Result<LocationReference, DecodeError> {
@@ -409,6 +484,27 @@ mod tests {
 
         assert_eq!(lrps[0].pos_offset.map(|i| i.lb as u64), Some(454));
         assert_eq!(lrps[3].neg_offset.map(|i| i.lb as u64), Some(85));
+    }
+
+    // ── PointAlongLine ───────────────────────────────────────────────────────
+
+    #[test]
+    fn tpeg_pal_base64() {
+        let loc = decode_tpeg_base64("CCsBEAInJgHY7yKlnwAJBQQBAnwACgUEAYYXAACs/TMACQUEAQL8AAAAQIMc")
+            .expect("PAL decode failed");
+        let lrps = loc.lrps().unwrap();
+        assert_eq!(lrps.len(), 2);
+        assert_eq!(lrps[0].frc, 1);
+        assert_eq!(lrps[0].fow, 2);
+        assert_eq!(lrps[0].lfrcnp, Some(1));
+        // DNP: varint 0x86 0x17 → (6<<7)|23 = 791
+        assert!((lrps[0].dnp.unwrap().lb - 791.0).abs() < 0.1);
+        // positive_offset: varint 0x83 0x1c → (3<<7)|28 = 412 m
+        assert!((lrps[0].pos_offset.unwrap().lb - 412.0).abs() < 0.1);
+        assert_eq!(lrps[1].frc, 1);
+        assert_eq!(lrps[1].fow, 2);
+        // orientation = 0 (NoOrientation), side_of_road = 0 (DirectlyOnOrNA)
+        assert!(matches!(loc, LocationReference::PointAlongLine { .. }));
     }
 
     // ── Error paths ──────────────────────────────────────────────────────────
