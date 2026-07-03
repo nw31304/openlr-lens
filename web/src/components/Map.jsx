@@ -1335,6 +1335,12 @@ export default function MapView({ tilesBase, ready }) {
   // ── Click interaction ────────────────────────────────────────────────────────
 
   function onNodeClick(e) {
+    if (coordCaptureActiveRef.current) {
+      cursorCoordRef.current = [e.lngLat.lng, e.lngLat.lat];
+      commitCoordCapture();
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (bearingActiveRef.current) {
       const pt = [e.lngLat.lng, e.lngLat.lat];
       const next = bearingPtsRef.current.length >= 2 ? [pt] : [...bearingPtsRef.current, pt];
@@ -1362,6 +1368,12 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onSegmentClick(e) {
+    if (coordCaptureActiveRef.current) {
+      cursorCoordRef.current = [e.lngLat.lng, e.lngLat.lat];
+      commitCoordCapture();
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (bearingActiveRef.current) {
       const pt = [e.lngLat.lng, e.lngLat.lat];
       const next = bearingPtsRef.current.length >= 2 ? [pt] : [...bearingPtsRef.current, pt];
@@ -1420,6 +1432,12 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onDecodedPathClick(e) {
+    if (coordCaptureActiveRef.current) {
+      cursorCoordRef.current = [e.lngLat.lng, e.lngLat.lat];
+      commitCoordCapture();
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (bearingActiveRef.current) {
       const pt = [e.lngLat.lng, e.lngLat.lat];
       const next = bearingPtsRef.current.length >= 2 ? [pt] : [...bearingPtsRef.current, pt];
@@ -1482,6 +1500,13 @@ export default function MapView({ tilesBase, ready }) {
   }
 
   function onLrpClick(e) {
+    if (coordCaptureActiveRef.current) {
+      cursorCoordRef.current = [e.lngLat.lng, e.lngLat.lat];
+      commitCoordCapture();
+      e.stopPropagation();
+      e.originalEvent.stopPropagation();
+      return;
+    }
     if (bearingActiveRef.current) {
       const pt = [e.lngLat.lng, e.lngLat.lat];
       const next = bearingPtsRef.current.length >= 2 ? [pt] : [...bearingPtsRef.current, pt];
