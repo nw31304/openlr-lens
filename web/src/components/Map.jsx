@@ -478,6 +478,19 @@ export default function MapView({ tilesBase, ready }) {
   const candidatePopup     = useStore(s => s.candidatePopup);
   const clearCandidatePopup = useStore(s => s.clearCandidatePopup);
 
+  // Only one map popup (segment / LRP / node / candidate) may be visible at a time —
+  // call this before opening any of them so the others don't linger on screen.
+  const closeAllPopups = () => {
+    setInfoProps(null);
+    setInfoAnchor(null);
+    setLrpInfo(null);
+    setSegDiagnosis(null);
+    setNodeInfo(null);
+    setNodeAnchor(null);
+    clearCandidatePopup();
+    setCandAnchor(null);
+  };
+
   const openlrString    = useStore(s => s.openlrString);
   const setOpenlrString = useStore(s => s.setOpenlrString);
   const runDecode       = useStore(s => s.runDecode);
@@ -502,6 +515,16 @@ export default function MapView({ tilesBase, ready }) {
   useEffect(() => {                                  // eslint-disable-line react-hooks/exhaustive-deps
     candidatePopupRef.current = candidatePopup;
     candResetPos();
+    if (candidatePopup) {
+      // Opening a candidate popup (e.g. from TracePanel) should close any other
+      // popup — but not itself, so don't route this through closeAllPopups().
+      setInfoProps(null);
+      setInfoAnchor(null);
+      setLrpInfo(null);
+      setSegDiagnosis(null);
+      setNodeInfo(null);
+      setNodeAnchor(null);
+    }
     const map = mapRef.current;
 
     // Update trace-segment-line color and trace-segment-arrow visibility based on accept/reject
@@ -640,10 +663,8 @@ export default function MapView({ tilesBase, ready }) {
     // The highlightedSegment effect (running in the same render cycle) will call
     // fitBounds and then register the moveend listener — storing the target coord
     // in pendingPopupCoordRef lets it project AFTER the animation settles.
-    setLrpInfo(null);
-    setInfoAnchor(null);
+    closeAllPopups();
     setInfoProps({ ...feat.properties, segment_id: segId });
-    setSegDiagnosis(null);
 
     const coords = feat.geometry.coordinates;
     pendingPopupCoordRef.current = polylineMid(coords);
@@ -1285,11 +1306,9 @@ export default function MapView({ tilesBase, ready }) {
     }
     if (!e.features?.length) return;
     const props = e.features[0].properties;
+    closeAllPopups();
     setNodeInfo(props);
     setNodeAnchor({ x: e.point.x, y: e.point.y });
-    setInfoProps(null);
-    setLrpInfo(null);
-    setSegDiagnosis(null);
     e.originalEvent.stopPropagation();
   }
 
@@ -1349,11 +1368,9 @@ export default function MapView({ tilesBase, ready }) {
     if (segCoords?.length) {
       pendingPopupCoordRef.current = polylineMid(segCoords);
     }
+    closeAllPopups();
     setHighlightedSegment({ tile: props.tile, local_index: props.local_index });
     setInfoProps({ ...props, segment_id: segId >= 0 ? segId : null });
-    setInfoAnchor(null);
-    setLrpInfo(null);
-    setSegDiagnosis(null);
     e.originalEvent.stopPropagation();
   }
 
@@ -1414,10 +1431,8 @@ export default function MapView({ tilesBase, ready }) {
       if (bestCoords?.length) {
         pendingPopupCoordRef.current = polylineMid(bestCoords);
       }
-      setLrpInfo(null);
-      setInfoAnchor(null);
+      closeAllPopups();
       setInfoProps({ ...best.feat.properties, segment_id: best.segId });
-      setSegDiagnosis(null);
       setHighlightedSegment({
         tile:        best.feat.properties.tile,
         local_index: best.feat.properties.local_index,
@@ -1450,9 +1465,9 @@ export default function MapView({ tilesBase, ready }) {
       return;
     }
     if (!e.features?.length) return;
+    closeAllPopups();
     setLrpInfo(e.features[0].properties);
     setInfoAnchor({ x: e.point.x, y: e.point.y });
-    setInfoProps(null);
     setHighlightedSegment(null);
     e.stopPropagation();           // stop lower-Z layers (segments) from also firing
     e.originalEvent.stopPropagation();
@@ -1482,9 +1497,7 @@ export default function MapView({ tilesBase, ready }) {
     const hits = mapRef.current.queryRenderedFeatures(e.point, { layers: layerIds });
     if (hits.length > 0) return;
     setHighlightedSegment(null);
-    setInfoProps(null);
-    setInfoAnchor(null);
-    setLrpInfo(null);
+    closeAllPopups();
   }
 
   // ── Highlight sync (store → map) ────────────────────────────────────────────
@@ -1673,6 +1686,7 @@ export default function MapView({ tilesBase, ready }) {
       const feat = features[0];
       // segId is the WASM runtime segment_id — include it so the popup
       // doesn't show "— (decode first)" for Internal ID.
+      closeAllPopups();
       setInfoProps({ ...feat.properties, segment_id: traceHighlightSegIds[0] });
       setInfoAnchor(null); // defer until fitBounds animation completes
       const coords = feat.geometry?.coordinates;
@@ -1716,6 +1730,7 @@ export default function MapView({ tilesBase, ready }) {
     map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 15), duration: 500 });
     // Enrich with snap info from decodeResult.lrps if available
     const lrpData = decodeResult?.lrps?.[index] ?? {};
+    closeAllPopups();
     setLrpInfo({
       index, lat, lon, frc, fow, lfrcnp: lfrcnp ?? null, bearing_lb, bearing_ub,
       snap_lon: lrpData.snap_lon ?? null,
@@ -1723,7 +1738,6 @@ export default function MapView({ tilesBase, ready }) {
       snap_is_endpoint: lrpData.snap_is_endpoint ?? null,
       snap_distance_m: lrpData.snap_distance_m ?? null,
     });
-    setInfoProps(null);
     // Position popup near map center (LRP will fly there)
     setInfoAnchor({ x: map.getCanvas().clientWidth / 2, y: map.getCanvas().clientHeight / 2 });
     // Allow re-clicking same LRP by clearing after acting
@@ -2157,7 +2171,10 @@ export default function MapView({ tilesBase, ready }) {
     }
     if (map.getLayer('olr-highlight'))     map.setLayoutProperty('olr-highlight',     'visibility', vis);
     if (map.getLayer('olr-nodes-circle')) map.setLayoutProperty('olr-nodes-circle', 'visibility', vis);
-  }, [showSegmentLayer]);
+    // Turning the layer on doesn't imply a pan/zoom, so the moveend/zoomend
+    // listeners that normally trigger tile loading never fire — load explicitly.
+    if (showSegmentLayer) loadVisibleTiles(map);
+  }, [showSegmentLayer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Decode result → map layers + camera ─────────────────────────────────────
 
@@ -2188,9 +2205,7 @@ export default function MapView({ tilesBase, ready }) {
       displSource?.setData(emptyFC);
       uncertaintySource?.setData(emptyFC);
       palSource?.setData(emptyFC);
-      setInfoProps(null);
-      setInfoAnchor(null);
-      setLrpInfo(null);
+      closeAllPopups();
       return;
     }
 
@@ -2788,7 +2803,7 @@ export default function MapView({ tilesBase, ready }) {
                 {[
                   ['Lat',      Number(nodeInfo.lat).toFixed(6)],
                   ['Lon',      Number(nodeInfo.lon).toFixed(6)],
-                  ['Node ID',  nodeInfo.node_id],
+                  ['Stable ID', nodeInfo.stable_id],
                   ['Tile',     nodeInfo.tile],
                 ].map(([k, v]) => (
                   <tr key={k}><td className="seg-info-key">{k}</td><td><b>{v}</b></td></tr>
