@@ -36,6 +36,18 @@ pub enum Command {
     Build(BuildArgs),
     /// Merge multiple regional PMTiles archives into one.
     Merge(MergeArgs),
+    /// Create an empty DuckDB file with the canonical ingestion schema applied.
+    /// Populate it yourself (SQL, or any language with DuckDB bindings) per
+    /// pipeline/schema/canonical_schema.sql, then build from it with
+    /// `build --canonical-db <path>`.
+    InitDb(InitDbArgs),
+}
+
+#[derive(clap::Args)]
+pub struct InitDbArgs {
+    /// Path for the new DuckDB file. Must not already exist.
+    #[arg(long)]
+    pub output: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -44,7 +56,7 @@ pub struct BuildArgs {
     /// Accepts a single .geojsonl or .geojsonl.gz file, or a directory of such files.
     /// Properties required per feature: id (integer), frc (0-7), fow (0-7),
     /// flowdir (1=both, 2=backward, 3=forward), from_int, to_int (node integers).
-    #[arg(long, conflicts_with_all = ["release", "schema", "pbf", "osm_schema"])]
+    #[arg(long, conflicts_with_all = ["release", "schema", "pbf", "osm_schema", "canonical_db"])]
     pub roads: Option<PathBuf>,
 
     /// Optional turn-restriction CSV for generic input (requires --roads).
@@ -61,8 +73,17 @@ pub struct BuildArgs {
     /// OSM PBF file or URL to build from (e.g. a Geofabrik regional extract).
     /// If a https:// URL is given, the file is downloaded to the current directory first.
     /// Use this instead of --release to build from OSM instead of Overture.
-    #[arg(long, conflicts_with_all = ["release", "schema"])]
+    #[arg(long, conflicts_with_all = ["release", "schema", "canonical_db"])]
     pub pbf: Option<String>,
+
+    /// Path to an existing DuckDB file already populated per
+    /// pipeline/schema/canonical_schema.sql (canonical_edges/canonical_nodes/
+    /// canonical_restrictions) — the entry point for any format-specific
+    /// producer (SQL transform or any language with DuckDB bindings) that
+    /// doesn't have a native importer in this pipeline. Always runs the
+    /// DuckDB-native ("low-memory") path; --low-memory has no effect here.
+    #[arg(long, conflicts_with_all = ["roads", "pbf", "release", "schema", "osm_schema"])]
+    pub canonical_db: Option<PathBuf>,
 
     /// OSM → OpenLR attribute mapping TOML file (OSM source only).
     #[arg(long, default_value = "pipeline/schema/osm-default.toml", requires = "pbf")]
@@ -119,19 +140,21 @@ pub struct BuildArgs {
     #[arg(long)]
     pub low_memory: bool,
 
-    /// Override the DuckDB memory limit (MiB) used by --low-memory.
+    /// Override the DuckDB memory limit (MiB). Applies to --low-memory and
+    /// --canonical-db builds (both always run through DuckDB); ignored otherwise.
     /// If omitted, defaults to 40% of currently available RAM.
     /// Increase this (e.g. --duckdb-memory-mb 12000) to let DuckDB use more
     /// RAM and spill less to disk, reducing build time.
-    #[arg(long, requires = "low_memory")]
+    #[arg(long)]
     pub duckdb_memory_mb: Option<u64>,
 
     /// Directory for DuckDB spill files when the memory limit is exceeded.
+    /// Applies to --low-memory and --canonical-db builds; ignored otherwise.
     /// Defaults to a subdirectory of --output so spill files land on the
     /// same disk as the output archive.  Override this if --output is on a
     /// slow or small disk and you have a faster/larger scratch partition.
     /// Must NOT be on a tmpfs/ramfs — spill files can be several GB.
-    #[arg(long, requires = "low_memory")]
+    #[arg(long)]
     pub duckdb_temp_dir: Option<PathBuf>,
 
     /// Gzip-compress each tile payload before writing it to the PMTiles archive.

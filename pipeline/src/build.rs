@@ -360,6 +360,65 @@ pub async fn run_generic(
     Ok(())
 }
 
+// ── Canonical DuckDB build path ───────────────────────────────────────────────
+
+/// Build a PMTiles archive from an existing DuckDB file already populated per
+/// pipeline/schema/canonical_schema.sql. Always runs the DuckDB-native path —
+/// there's no separate in-memory variant, since the whole point of this entry
+/// point is supporting producers too large to hold in memory at all.
+pub async fn run_canonical(
+    canonical_db_path: &Path,
+    label:             &str,
+    extent_spec:       &str,
+    output:            &Path,
+    tile_zoom:         u8,
+    compress:          bool,
+    duckdb_memory_mb:  Option<u64>,
+    duckdb_temp_dir:   Option<&Path>,
+    show_progress:     bool,
+) -> Result<()> {
+    std::fs::create_dir_all(output)?;
+    let t0 = Instant::now();
+
+    let extent_slug = crate::extent::extent_slug(extent_spec);
+    let release_label = if label.is_empty() { "canonical" } else { label };
+
+    info!(
+        canonical_db = %canonical_db_path.display(),
+        extent       = %extent_slug,
+        output       = %output.display(),
+        "canonical build started"
+    );
+
+    let db_path      = canonical_db_path.to_path_buf();
+    let out_dir      = output.to_path_buf();
+    let ext_slug     = extent_slug.clone();
+    let release_owned = release_label.to_string();
+    let tmp_dir      = duckdb_temp_dir.map(|p| p.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        crate::canonical_low_memory::run_pipeline(
+            &db_path,
+            &out_dir,
+            &ext_slug,
+            &release_owned,
+            tile_zoom,
+            duckdb_memory_mb,
+            tmp_dir.as_deref(),
+            show_progress,
+            compress,
+        )
+    })
+    .await
+    .context("canonical_low_memory panicked")??;
+
+    info!(
+        elapsed_s = t0.elapsed().as_secs_f32(),
+        output    = %output.display(),
+        "canonical build complete"
+    );
+    Ok(())
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub async fn run(

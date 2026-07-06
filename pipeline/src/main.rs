@@ -1,5 +1,7 @@
 mod adapt;
 mod build;
+mod canonical_low_memory;
+mod canonical_schema;
 mod cli;
 mod extent;
 mod extract;
@@ -54,6 +56,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::ListReleases => releases::list_and_print(&http::Client::new(retry)).await?,
         Command::Merge(args)  => run_merge(args)?,
+        Command::InitDb(args) => {
+            canonical_schema::init_db(&args.output)?;
+            info!(output = %args.output.display(), "canonical schema database created");
+        }
         Command::Build(args) => {
             if let Some(n) = args.jobs {
                 rayon::ThreadPoolBuilder::new()
@@ -63,7 +69,21 @@ async fn main() -> Result<()> {
                 info!(threads = n, "rayon thread pool configured");
             }
 
-            if let Some(roads_path) = args.roads {
+            if let Some(canonical_db_path) = args.canonical_db {
+                // ── Canonical DuckDB path ──────────────────────────────────────
+                build::run_canonical(
+                    &canonical_db_path,
+                    &args.label,
+                    &args.extent,
+                    &args.output,
+                    args.tile_zoom,
+                    args.compress_tiles,
+                    args.duckdb_memory_mb,
+                    args.duckdb_temp_dir.as_deref(),
+                    args.progress,
+                )
+                .await?;
+            } else if let Some(roads_path) = args.roads {
                 // ── Generic GeoJSONL path ─────────────────────────────────────
                 // extent_slug is derived directly from the --extent label; no
                 // spatial filtering is needed — the data is already the right region.
