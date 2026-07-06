@@ -36,13 +36,13 @@ pub fn encode_restriction_flags(from_heading: u8, to_heading: u8) -> u8 {
 #[derive(Debug, Clone)]
 pub struct RestrictionTriple {
     pub from_segment_id: [u8; 16],
-    pub via_connector_id: [u8; 16],
+    pub via_node_id: [u8; 16],
     pub to_segment_id: [u8; 16],
     pub flags: u8,
 }
 
 /// Flatten `prohibited_transitions` from every adapted segment into a list of
-/// (from_segment, via_connector, to_segment) triples.
+/// (from_segment, via_node, to_segment) triples.
 ///
 /// Each `ProhibitedTransition` lives on its "from" segment and carries a `sequence`
 /// of `{connector_id, segment_id}` hops.  For the common single-hop case:
@@ -85,7 +85,7 @@ pub fn flatten(segments: &[AdaptedSegment]) -> Vec<RestrictionTriple> {
                 (Ok(via), Ok(to)) => {
                     out.push(RestrictionTriple {
                         from_segment_id: from_id,
-                        via_connector_id: via,
+                        via_node_id: via,
                         to_segment_id: to,
                         flags,
                     });
@@ -167,9 +167,9 @@ mod tests {
         let segs = vec![bare_segment(SEG1_ID, vec![one_hop(VIA_ID, TO_ID)])];
         let triples = flatten(&segs);
         assert_eq!(triples.len(), 1);
-        assert_eq!(triples[0].from_segment_id,  parse_hex_id(SEG1_ID).unwrap());
-        assert_eq!(triples[0].via_connector_id, parse_hex_id(VIA_ID).unwrap());
-        assert_eq!(triples[0].to_segment_id,    parse_hex_id(TO_ID).unwrap());
+        assert_eq!(triples[0].from_segment_id, parse_hex_id(SEG1_ID).unwrap());
+        assert_eq!(triples[0].via_node_id,     parse_hex_id(VIA_ID).unwrap());
+        assert_eq!(triples[0].to_segment_id,   parse_hex_id(TO_ID).unwrap());
         assert_eq!(triples[0].flags, encode_restriction_flags(HEADING_ANY, HEADING_ANY));
     }
 

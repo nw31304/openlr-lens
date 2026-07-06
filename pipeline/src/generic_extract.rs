@@ -351,10 +351,10 @@ pub fn read_restrictions_csv(
         };
 
         out.push(RestrictionTriple {
-            from_segment_id:  segment_id_bytes(from_id),
-            via_connector_id: node_id_bytes(via_node_id),
-            to_segment_id:    segment_id_bytes(to_id),
-            flags:            0,
+            from_segment_id: segment_id_bytes(from_id),
+            via_node_id:     node_id_bytes(via_node_id),
+            to_segment_id:   segment_id_bytes(to_id),
+            flags:           0,
         });
     }
 

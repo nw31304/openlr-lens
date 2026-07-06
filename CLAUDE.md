@@ -2,7 +2,7 @@
 
 Browser-based WebAssembly OpenLR **diagnostic decoder** with global coverage. Rust core → WASM
 does codec + graph + A* entirely client-side; JS/MapLibre front end renders diagnostics. Map data
-is preprocessed once per Overture release into a static PMTiles archive (R2/CDN); no live server
+is preprocessed once per source-data release into a static PMTiles archive (R2/CDN); no live server
 queries at runtime. Two decode formats: **OpenLR binary v3** (TomTom; 11.25° bearing buckets,
 ~58.6 m DNP buckets) and **TPEG-OLR / ISO 21219-22** (full precision). Encoder is stubbed.
 
@@ -12,9 +12,10 @@ queries at runtime. Two decode formats: **OpenLR binary v3** (TomTom; 11.25° be
 
 ## 2. Critical Invariants
 
-1. **Split at every interior connector.** Overture segments may have connectors at interior
-   positions. The graph model is strictly node-to-node edges. Missing splits → junctions silently
-   vanish; A* routes around them. Fails in dense urban areas, passes in sparse rural ones.
+1. **Split at every interior junction.** Source segments/ways may have other roads attaching at
+   interior positions, not just at their endpoints. The graph model is strictly node-to-node edges.
+   Missing splits → junctions silently vanish; A* routes around them. Fails in dense urban areas,
+   passes in sparse rural ones.
 
 2. **Stable, deterministic ids derived from the source data — never build/row order.** Turn
    restrictions and cross-tile stitching reference segments/nodes by stable ID. A rebuild must
@@ -40,13 +41,16 @@ queries at runtime. Two decode formats: **OpenLR binary v3** (TomTom; 11.25° be
    diagnostic attributes score gaps to specific terms at specific LRPs; a non-additive cost
    destroys explainability.
 
-8. **License: ODbL.** Overture transportation is OSM-derived. Attribution (OSM + Overture) and
-   share-alike obligations apply to the derived tile store. See §13.
+8. **License depends on the configured source data.** OSM-derived sources (OSM directly, or any
+   provider whose road-network theme derives from OSM) carry **ODbL** — attribution and
+   share-alike obligations apply to the derived tile store. Verify the actual license of whichever
+   source feeds a given build. See §13.
 
 9. **A* FRC fetch is bounded by LFRCNP, not the LRP's candidate FRC tolerance.** The route
    between two LRPs may use roads down to LFRCNP, which can be much lower than the LRP's
-   candidate band. Fetching only `[frc±t]` silently drops connectors. In v1 every tile carries
-   all FRCs so this is automatic; it becomes a live constraint if FRC stratification is added.
+   candidate band. Fetching only `[frc±t]` silently drops the lower-class roads connecting them.
+   In v1 every tile carries all FRCs so this is automatic; it becomes a live constraint if FRC
+   stratification is added.
 
 ---
 
@@ -54,7 +58,7 @@ queries at runtime. Two decode formats: **OpenLR binary v3** (TomTom; 11.25° be
 
 ```
   BUILD TIME (few times/year)
-  Overture parquet ──▶ [pipeline/] ──▶ PMTiles archive ──▶ R2 + CDN
+  Road network source data ──▶ [pipeline/] ──▶ PMTiles archive ──▶ R2 + CDN
 
   RUNTIME (browser only, no server)
   PMTiles ──range reads──▶ [TileLoader] ──▶ [OpenLRDataProvider] ──▶ in-memory graph
@@ -152,12 +156,13 @@ Coordinate precision: 1e-7 degrees ≈ 1 cm. `geom_offset` is a vertex index (no
 
 ## 6. Build pipeline — COMPLETE
 
-All steps implemented and verified on NZ (1.5 M edges, 4 680 tiles at z12). Schema mapping is
-**external TOML** (`pipeline/schema/overture-default.toml`), not hardcoded — pass `--schema`
-to override when Overture revises its taxonomy.
+All steps implemented and verified on NZ (1.5 M edges, 4 680 tiles at z12). Schema mapping for
+schema-driven sources is **external TOML** (default: `pipeline/schema/overture-default.toml`),
+not hardcoded — pass `--schema` to point at a different source's taxonomy.
 
 **Remaining TODOs:**
-- Restrictions are 0 in output — `prohibited_transitions` schema not yet validated against live Overture data
+- Restrictions are 0 in output for the Overture ingestion path — its `prohibited_transitions`
+  schema mapping not yet validated against live data
 - `write_tiles` in tile.rs buffers all payloads before writing — streaming writer needed for world-scale
 - Scale to full planet
 
@@ -246,9 +251,10 @@ Hard tolerances and soft penalties must stay distinct types. A decode is
 
 ## 13. Licensing & attribution (non-negotiable)
 
-Overture transportation is OSM-derived, carried under **ODbL**. The derived tile store and all
-served output must preserve attribution (OSM + Overture) and honour share-alike obligations.
-Document exact attribution text before public release.
+Licensing depends entirely on the configured source data — verify it before every build. Sources
+derived from OSM (OSM directly, or any provider whose road-network theme is OSM-derived, e.g.
+Overture) carry **ODbL**: the derived tile store and all served output must preserve attribution
+and honour share-alike obligations. Document exact attribution text before public release.
 
 ---
 

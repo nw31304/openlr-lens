@@ -9,8 +9,9 @@ use openlr_graph::Direction;
 
 // ── Output types ──────────────────────────────────────────────────────────────
 
-/// One node-to-node directed edge, produced by splitting a segment at
-/// every interior connector position (Invariant 1).
+/// One node-to-node directed edge (Invariant 1). Producers that split a longer source
+/// way/segment at interior junctions (OSM, Overture) emit one `SplitEdge` per sub-edge;
+/// producers whose source is already node-to-node (generic GeoJSONL) emit one directly.
 #[derive(Debug, Clone)]
 pub struct SplitEdge {
     pub start_node_id: [u8; 16],

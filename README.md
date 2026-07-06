@@ -11,7 +11,7 @@ Two decode formats are supported:
 
 ```
 BUILD TIME  (a few times per year)
-  Overture / OSM road network ──▶ pipeline/ ──▶ PMTiles archive ──▶ R2 / CDN
+  Road network source data ──▶ pipeline/ ──▶ PMTiles archive ──▶ R2 / CDN
 
 RUNTIME  (browser, no server)
   PMTiles (range reads) ──▶ TileLoader ──▶ OpenLRDataProvider ──▶ in-memory graph
@@ -34,7 +34,7 @@ All map I/O stays in JavaScript. WASM receives pre-fetched tile bytes and operat
 | `openlr-engine` | Candidate selection, A\* (`state = (node, incoming_segment)`), scoring, diagnostics |
 | `openlr-provider` | `OpenLRDataProvider` trait + `PmtilesProvider` implementation |
 | `openlr-wasm` | `wasm-bindgen` glue exposing `decode` / `decode_forced` to JS |
-| `pipeline` | One-shot CLI to build a PMTiles archive from Overture or generic GeoJSONL |
+| `pipeline` | One-shot CLI to build a PMTiles archive from Overture, OSM, or generic GeoJSONL source data |
 
 ### Web frontend
 
@@ -103,8 +103,8 @@ For local dev, drop the resulting `.pmtiles` file into `out/` and the built-in V
 
 ## Tile format
 
-Custom binary payload (magic `OLRL`, version 3). All integers little-endian, single zoom level (default z12). Segments are post-split at every interior connector — junctions are never elided. Each segment and node carries a provider-defined opaque stable ID (UTF-8 string, stored in a per-tile string pool). See `CLAUDE.md §4–5` for the full layout.
+Custom binary payload (magic `OLRL`, version 3). All integers little-endian, single zoom level (default z12). Segments are post-split at every interior junction — junctions are never elided. Each segment and node carries a provider-defined opaque stable ID (UTF-8 string, stored in a per-tile string pool). See `CLAUDE.md §4–5` for the full layout.
 
 ## License
 
-Web frontend: MIT. Derived tile data: **ODbL** (OSM-derived via Overture). Any served output must preserve OSM + Overture attribution and honour share-alike obligations.
+Web frontend: MIT. Derived tile data license depends on the source data used to build it: OSM-derived sources (OSM directly, or any provider whose road-network theme is OSM-derived, e.g. Overture) carry **ODbL** — any served output must preserve attribution and honour share-alike obligations.

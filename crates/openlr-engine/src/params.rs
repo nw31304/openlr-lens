@@ -30,7 +30,7 @@ pub fn default_frc_table() -> [[f64; 8]; 8] {
 /// 3=SingleCarriageway, 4=Roundabout, 5=TrafficSquare, 6=SlipRoad, 7=Other.
 ///
 /// Key cross-map properties encoded in the defaults:
-/// - Motorway ↔ MultipleCarriageway: 0.10 (OSM / Overture maps often lack MC)
+/// - Motorway ↔ MultipleCarriageway: 0.10 (many map sources lack a distinct MC class)
 /// - Motorway ↔ SlipRoad:            0.20 (slip roads are attached to motorways)
 /// - MultipleCarriageway ↔ Single:   0.20
 /// - SingleCarriageway ↔ Roundabout: 0.20 (roundabouts absent on some maps)

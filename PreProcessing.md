@@ -191,9 +191,9 @@ if they disagree, this silently keeps an arbitrary copy.
 Each `OsmRestriction {from_way_id, via_node_id, to_way_id}` maps to:
 ```rust
 RestrictionTriple {
-    from_segment_id:  encode_way_id(from_way_id),   // 16-byte internal key
-    via_connector_id: encode_node_id(via_node_id),
-    to_segment_id:    encode_way_id(to_way_id),
+    from_segment_id: encode_way_id(from_way_id),   // 16-byte internal key
+    via_node_id:     encode_node_id(via_node_id),
+    to_segment_id:   encode_way_id(to_way_id),
     flags: encode_restriction_flags(HEADING_ANY, HEADING_ANY),
 }
 ```
@@ -435,10 +435,10 @@ let mut boundary_nodes: HashSet<[u8; 16]> = HashSet::new();
 for (key, indices) in &tile_bins {
     for &idx in indices {
         let e = &edges[idx];
-        for gers in [e.start_node_gers, e.end_node_gers] {
-            match node_to_tile.entry(gers) {
+        for node_id in [e.start_node_id, e.end_node_id] {
+            match node_to_tile.entry(node_id) {
                 Occupied(prev_tile) if *prev_tile.get() != *key
-                    => { boundary_nodes.insert(gers); }
+                    => { boundary_nodes.insert(node_id); }
                 Vacant(v) => { v.insert(*key); }
                 _ => {}
             }
@@ -457,21 +457,21 @@ identified in §14):
 
 ```rust
 from_edge_map: HashMap<([u8;16], [u8;16]), usize>
-// key: (parent_gers_id, end_node_gers) → global edge index
+// key: (parent_id, end_node_id) → global edge index
 // matches the FROM segment: which edge ends at the via-node?
 
 to_edge_map: HashMap<([u8;16], [u8;16]), usize>
-// key: (parent_gers_id, start_node_gers) → global edge index
+// key: (parent_id, start_node_id) → global edge index
 // matches the TO segment: which edge starts at the via-node?
 ```
 
 For each `RestrictionTriple`:
 1. Look up via-node's tile in `node_to_tile`; skip if not found
-2. Find `from_global` via `from_edge_map[(r.from_segment_gers, r.via_connector_gers)]`
-3. Find `to_global` via `to_edge_map[(r.to_segment_gers, r.via_connector_gers)]`
+2. Find `from_global` via `from_edge_map[(r.from_segment_id, r.via_node_id)]`
+3. Find `to_global` via `to_edge_map[(r.to_segment_id, r.via_node_id)]`
 4. Look up via-node's local index in that tile's node map
 5. If from, via, and to are all in the same tile → write to `IntraTileRestriction`
-6. If they span tiles → write to `CrossTileRestriction` (uses global GERS IDs)
+6. If they span tiles → write to `CrossTileRestriction` (uses global 16-byte internal keys)
 
 Germany results: 59,892 total, 32,153 intra-tile, 27,739 cross-tile (~46%).
 
@@ -879,8 +879,8 @@ restriction table placement, or payload binary layout roundtrip.
 The k-way heap merge is untested with 3+ inputs. Overlapping tile IDs across inputs
 are not detected (silent corrupt output — no `ensure!` check exists).
 
-**`parse_gers_id_or_warn()` returns `[0u8;16]` on failure**
-Zero is a valid GERS ID. Two segments with unparseable IDs silently share identity,
+**A hex-ID parse helper that returns `[0u8;16]` on failure**
+Zero is a valid hex ID. Two segments with unparseable IDs silently share identity,
 corrupting turn restriction lookups and cross-tile stitching. Should hard-error.
 
 **`quantize_coord()` has no overflow guard**
@@ -939,7 +939,7 @@ pipeline/
     osm_extract.rs    Two-pass PBF reader → OsmData
     osm_adapt.rs      OsmData → SplitEdge/NodeRecord/RestrictionTriple; OSM stable ID encoding
     osm_schema.rs     OsmSchemaMapping TOML; lookup(); DEFAULT_SCHEMA_STR (include_str embed)
-    split.rs          Overture connector-based splitter; haversine; sub_geometry; GERS ID parse
+    split.rs          Overture connector-based splitter; haversine; sub_geometry; hex ID parse
     quantize.rs       1e-7 degree quantization; collinear removal
     tile.rs           Edge binner; tile payload builder; PMTiles v3 writer; Hilbert curve; manifest
     merge.rs          PmtilesReader; StreamingWriter; merge_pmtiles() k-way merge

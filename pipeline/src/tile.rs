@@ -674,8 +674,8 @@ pub fn write_tiles(
     let mut tile_intra: HashMap<TileKey, Vec<IntraTileRestriction>> = HashMap::new();
     let mut tile_cross: HashMap<TileKey, Vec<CrossTileRestriction>> = HashMap::new();
 
-    // from-edge: the split edge with parent == from_seg that ends at via_connector.
-    // to-edge:   the split edge with parent == to_seg   that starts at via_connector.
+    // from-edge: the split edge with parent == from_seg that ends at via_node.
+    // to-edge:   the split edge with parent == to_seg   that starts at via_node.
     let mut from_edge_map: HashMap<([u8; 16], [u8; 16]), usize> = HashMap::new();
     let mut to_edge_map:   HashMap<([u8; 16], [u8; 16]), usize> = HashMap::new();
     for (i, e) in edges.iter().enumerate() {
@@ -686,7 +686,7 @@ pub fn write_tiles(
     let mut n_resolved = 0usize;
     let mut n_skipped  = 0usize;
     for r in &restrictions {
-        let via_bytes = r.via_connector_id;
+        let via_bytes = r.via_node_id;
         let via_tile = match node_to_tile.get(&via_bytes) {
             Some(&t) => t,
             None     => { n_skipped += 1; continue; }

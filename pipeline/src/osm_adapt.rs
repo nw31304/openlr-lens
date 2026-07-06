@@ -18,7 +18,7 @@ use openlr_graph::Direction;
 // The two spaces are disjoint: a node key always has zeroes in bytes 0–7 and a
 // way key always has zeroes in bytes 8–15, so they can never accidentally collide.
 // Restriction lookup uses (parent_id, end_node_id) as the key, requiring
-// from_segment_id == parent_id (way encoding) and via_connector_id == end/start_node_id.
+// from_segment_id == parent_id (way encoding) and via_node_id == end/start_node_id.
 
 pub(crate) fn encode_node_id(id: i64) -> [u8; 16] {
     let mut buf = [0u8; 16];
@@ -138,16 +138,16 @@ pub fn adapt(data: OsmData) -> (Vec<SplitEdge>, Vec<NodeRecord>, Vec<Restriction
     // ── Convert turn restrictions ─────────────────────────────────────────────
     //
     // from_segment_id = encode_way_id(from_way_id)  → matches parent_id of FROM sub-edge
-    // via_connector_id = encode_node_id(via_node_id) → matches end_node_id of FROM sub-edge
+    // via_node_id     = encode_node_id(via_node_id) → matches end_node_id of FROM sub-edge
     //                                                  and start_node_id of TO sub-edge
     // to_segment_id   = encode_way_id(to_way_id)   → matches parent_id of TO sub-edge
 
     let all_restrictions: Vec<RestrictionTriple> = restrictions
         .iter()
         .map(|r| RestrictionTriple {
-            from_segment_id:  encode_way_id(r.from_way_id),
-            via_connector_id: encode_node_id(r.via_node_id),
-            to_segment_id:    encode_way_id(r.to_way_id),
+            from_segment_id: encode_way_id(r.from_way_id),
+            via_node_id:     encode_node_id(r.via_node_id),
+            to_segment_id:   encode_way_id(r.to_way_id),
             flags: encode_restriction_flags(HEADING_ANY, HEADING_ANY),
         })
         .collect();
@@ -305,8 +305,8 @@ mod tests {
         };
         let (_, _, restrictions) = adapt(data);
         assert_eq!(restrictions.len(), 1);
-        assert_eq!(restrictions[0].from_segment_id,  encode_way_id(100));
-        assert_eq!(restrictions[0].via_connector_id, encode_node_id(5));
-        assert_eq!(restrictions[0].to_segment_id,    encode_way_id(200));
+        assert_eq!(restrictions[0].from_segment_id, encode_way_id(100));
+        assert_eq!(restrictions[0].via_node_id,     encode_node_id(5));
+        assert_eq!(restrictions[0].to_segment_id,   encode_way_id(200));
     }
 }
