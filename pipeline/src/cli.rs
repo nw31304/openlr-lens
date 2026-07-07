@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "openlrlens-build", about = "Build OpenLRLens PMTiles from Overture Maps or an OSM PBF file")]
+#[command(name = "openlr-lens-build", about = "Build OpenLRLens PMTiles from Overture Maps or an OSM PBF file")]
 pub struct Cli {
     /// Increase log verbosity: -v = debug, -vv = trace. Overridden by RUST_LOG.
     #[arg(short, long, action = ArgAction::Count, global = true)]

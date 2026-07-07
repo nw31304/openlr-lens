@@ -1,10 +1,10 @@
 [package]
-name    = "openlrlens-build"
+name    = "openlr-lens-build"
 edition.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "openlrlens-build"
+name = "openlr-lens-build"
 path = "src/main.rs"
 
 [dependencies]

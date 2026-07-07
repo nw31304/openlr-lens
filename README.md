@@ -77,13 +77,13 @@ npm run dev
 
 ```sh
 # NZ from a local PBF (~5 s)
-cargo run --release --bin openlrlens-build -- \
+cargo run --release --bin openlr-lens-build -- \
   build --extent NZ --pbf new-zealand-latest.osm.pbf --output ./out/nz-osm
 
 # Large region from PBF with low-memory DuckDB backend
 cargo run \
   --release \
-  --bin openlrlens-build -- \
+  --bin openlr-lens-build -- \
   build \
   --extent world \
   --pbf out/europe-latest.osm.pbf \
@@ -95,7 +95,7 @@ cargo run \
   --duckdb-temp-dir ./tmp/
 
 # Merge regional archives into one
-cargo run --release --bin openlrlens-build -- \
+cargo run --release --bin openlr-lens-build -- \
   merge --output out/world/world.pmtiles out/nz-osm out/eur-osm
 ```
 

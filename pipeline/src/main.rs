@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| EnvFilter::new(default_level));
     fmt().with_env_filter(filter).with_target(false).init();
 
-    debug!("openlrlens-build starting");
+    debug!("openlr-lens-build starting");
 
     let retry = RetryConfig::new(
         cli.retry_max,

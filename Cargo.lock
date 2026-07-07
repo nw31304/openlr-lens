@@ -1446,33 +1446,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openlr-provider"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "openlr-codec",
- "openlr-engine",
- "openlr-graph",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "openlr-wasm"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "openlr-codec",
- "openlr-engine",
- "openlr-graph",
- "openlr-provider",
- "serde",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "openlrlens-build"
+name = "openlr-lens-build"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1497,6 +1471,32 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "urlencoding",
+]
+
+[[package]]
+name = "openlr-provider"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "openlr-codec",
+ "openlr-engine",
+ "openlr-graph",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "openlr-wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "openlr-codec",
+ "openlr-engine",
+ "openlr-graph",
+ "openlr-provider",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]

@@ -709,7 +709,7 @@ detail here as the OSM path is the primary active path.
 ## 13. CLI reference
 
 ```
-openlrlens-build [GLOBAL FLAGS] <SUBCOMMAND>
+openlr-lens-build [GLOBAL FLAGS] <SUBCOMMAND>
 
 SUBCOMMANDS:
   list-releases
@@ -987,29 +987,29 @@ germany-latest.osm.pbf       4.5 GB — kept to avoid 57-min re-download
 ## 19. How to rebuild
 
 ```bash
-cd /Users/dave/projects/rust/openlr_lens
+cd /Users/dave/projects/rust/openlr-lens
 
 # NZ — fast schema iteration (~5 s, uses cached PBF)
-cargo run --release --bin openlrlens-build -- \
+cargo run --release --bin openlr-lens-build -- \
   build --pbf new-zealand-latest.osm.pbf --extent NZ --output out/nz-osm --progress
 
 # Germany — scalability reference (~94 s processing, PBF already present)
-cargo run --release --bin openlrlens-build -- \
+cargo run --release --bin openlr-lens-build -- \
   build --pbf germany-latest.osm.pbf --extent DE --output out/de-osm --progress
 
 # Germany from URL (re-downloads 4.5 GB)
-cargo run --release --bin openlrlens-build -- \
+cargo run --release --bin openlr-lens-build -- \
   build --pbf https://download.geofabrik.de/europe/germany-latest.osm.pbf \
   --extent DE --output out/de-osm --progress
 
 # Large region with low-memory DuckDB backend
-cargo run --release --bin openlrlens-build -- \
+cargo run --release --bin openlr-lens-build -- \
   build --extent world --pbf out/europe-latest.osm.pbf \
   --output ./out/eur-osm --low-memory --progress \
   --compress-tiles --duckdb-memory-mb 15000 --duckdb-temp-dir ./tmp/
 
 # Merge regional archives into one
-cargo run --release --bin openlrlens-build -- \
+cargo run --release --bin openlr-lens-build -- \
   merge --output out/world/openlrlens-world.pmtiles out/nz-osm out/de-osm
 
 # View in browser
