@@ -59,10 +59,11 @@ export default defineConfig({
     name: 'tile-server',
     configureServer() {
       // PMTiles archives are built by the separate openlr-pmtiles repo, not
-      // this one -- point OPENLR_TILES_DIR at wherever its `out/` directory
-      // landed (e.g. ../../openlr-pmtiles/out). Falls back to a local ../out
-      // for convenience if you've copied/symlinked output here instead.
-      const tilesDir = path.resolve(__dirname, process.env.OPENLR_TILES_DIR || '../out');
+      // this one. Default location: /Users/dave/projects/maps/pmtiles.
+      // Override with OPENLR_TILES_DIR if you're pointing at a different
+      // build output directory.
+      const DEFAULT_TILES_DIR = '/Users/dave/projects/maps/pmtiles';
+      const tilesDir = path.resolve(__dirname, process.env.OPENLR_TILES_DIR || DEFAULT_TILES_DIR);
 
       const srv = http.createServer((req, res) => {
         if (req.method === 'OPTIONS') {
