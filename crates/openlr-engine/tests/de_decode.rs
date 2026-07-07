@@ -13,7 +13,6 @@ const DE_TILES: &str = concat!(
 fn read_tile(pmtiles_path: &str, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
     use std::fs::File;
     use std::io::{Read, Seek, SeekFrom};
-    use std::collections::HashMap;
 
     let mut f = File::open(pmtiles_path).ok()?;
     let mut hdr = [0u8; 127];
@@ -136,7 +135,7 @@ fn decode_de_reference() {
         if let Some(data) = read_tile(tile_path, key.z, key.x, key.y) {
             println!("  tile {}/{}/{}: {} bytes, magic={:?}", key.z, key.x, key.y, data.len(), &data[..4]);
             match loader.load_tile(&data) {
-                Ok(())  => { loaded += 1; }
+                Ok(_)   => { loaded += 1; }
                 Err(e)  => println!("  LOAD ERROR: {e}"),
             }
         } else {

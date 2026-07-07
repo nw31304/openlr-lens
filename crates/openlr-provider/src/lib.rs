@@ -238,7 +238,7 @@ mod integration {
         let bearing_1 = bearing_at_offset(&seg_b.geometry, seg_b.length_m, false);
         let dnp_crow = haversine_m(coord_0.0, coord_0.1, coord_1.0, coord_1.1);
 
-        let loc_ref = LocationReference::line(vec![
+        let loc_ref = LocationReference::Line { lrps: vec![
                 Lrp {
                     coord: coord_0,
                     bearing: CircularInterval {
@@ -268,16 +268,17 @@ mod integration {
                     pos_offset: None, neg_offset: None,
                     pos_offset_raw: None, neg_offset_raw: None,
                 },
-            ]);
+            ] };
 
         // Exercise the full pipeline: prefetch tiles for this reference, then decode.
         let params = DecodeParams::preset(Preset::Permissive);
-        let keys = prefetch_tile_keys(&loc_ref.lrps, &params, provider.zoom);
+        let keys = prefetch_tile_keys(loc_ref.lrps().unwrap(), &params, provider.zoom);
         provider.load_tiles(&keys).expect("prefetch tile load failed");
 
         let result = decode(&loc_ref, provider.graph(), &params, 12);
         match result {
             Ok(decoded) => {
+                let decoded = decoded.as_network().expect("expected network-based location");
                 assert!(!decoded.path.is_empty(), "decoded path must be non-empty");
                 assert!(
                     decoded.path.contains(&seg_a.id) || decoded.path.contains(&seg_b.id),
@@ -310,8 +311,8 @@ mod integration {
             "CwV/ECHkoiORC//N/bIjjRYD+fy+I44FAAv+0yOOAwAL/2cbcn3flfluGwM=",
         ).expect("v3 decode failed");
 
-        assert_eq!(loc_ref.lrps.len(), 6, "expected 6 LRPs");
-        for (i, lrp) in loc_ref.lrps.iter().enumerate() {
+        assert_eq!(loc_ref.lrps().unwrap().len(), 6, "expected 6 LRPs");
+        for (i, lrp) in loc_ref.lrps().unwrap().iter().enumerate() {
             eprintln!(
                 "LRP[{i}]: ({:.6}, {:.6})  frc={} fow={} lfrcnp={}{}",
                 lrp.coord.0, lrp.coord.1, lrp.frc, lrp.fow,
@@ -324,12 +325,13 @@ mod integration {
         eprintln!("Params: radius={:.0}m  snap={:.0}m  max_cands={}  lfrcnp_tol={}  max_exp={}",
             params.candidate_search_radius_m, params.snap_to_endpoint_threshold_m,
             params.max_candidates_per_lrp, params.lfrcnp_tolerance, params.max_astar_expansions);
-        let keys = prefetch_tile_keys(&loc_ref.lrps, &params, provider.zoom);
+        let keys = prefetch_tile_keys(loc_ref.lrps().unwrap(), &params, provider.zoom);
         eprintln!("Prefetching {} tile(s) …", keys.len());
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
         let result = decode(&loc_ref, provider.graph(), &params, 12).expect("decode failed");
+        let result = result.as_network().expect("expected network-based location");
         assert!(!result.path.is_empty());
 
         let wkt = path_to_wkt(
@@ -366,9 +368,9 @@ mod integration {
         let loc_ref = decode_v3_base64("CwV+1CJROzbLCf8gARozDg==")
             .expect("v3 decode failed");
 
-        assert_eq!(loc_ref.lrps.len(), 2);
-        let lrp0 = &loc_ref.lrps[0];
-        let lrp1 = &loc_ref.lrps[1];
+        assert_eq!(loc_ref.lrps().unwrap().len(), 2);
+        let lrp0 = &loc_ref.lrps().unwrap()[0];
+        let lrp1 = &loc_ref.lrps().unwrap()[1];
         eprintln!(
             "LRP[0]: ({:.6}, {:.6})  frc={} fow={}  dnp=[{:.0},{:.0}] m  bearing=[{:.2},{:.2}]°",
             lrp0.coord.0, lrp0.coord.1, lrp0.frc, lrp0.fow,
@@ -383,7 +385,7 @@ mod integration {
         );
 
         let params = DecodeParams::preset(Preset::Permissive);
-        let keys = prefetch_tile_keys(&loc_ref.lrps, &params, provider.zoom);
+        let keys = prefetch_tile_keys(loc_ref.lrps().unwrap(), &params, provider.zoom);
         eprintln!("Prefetching {} tile(s) …", keys.len());
         provider.load_tiles(&keys).expect("tile load failed");
 
@@ -396,6 +398,7 @@ mod integration {
         let result = decode(&loc_ref, provider.graph(), &params, 12);
         match result {
             Ok(decoded) => {
+                let decoded = decoded.as_network().expect("expected network-based location");
                 assert!(!decoded.path.is_empty(), "decoded path must be non-empty");
                 eprintln!("Germany decode OK: {} segment(s) in path", decoded.path.len());
                 for id in &decoded.path {
@@ -426,23 +429,23 @@ mod integration {
         ).expect("v3 decode failed");
 
         let params = DecodeParams::preset(Preset::Permissive);
-        let keys = prefetch_tile_keys(&full_ref.lrps, &params, provider.zoom);
+        let keys = prefetch_tile_keys(full_ref.lrps().unwrap(), &params, provider.zoom);
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
         // Try each consecutive pair as an isolated 2-LRP decode.
         eprintln!("\n--- Testing each leg in isolation (max_cands={}) ---", params.max_candidates_per_lrp);
-        for leg in 0..full_ref.lrps.len() - 1 {
-            let loc2 = LocationReference::line(vec![full_ref.lrps[leg].clone(), full_ref.lrps[leg + 1].clone()]);
+        for leg in 0..full_ref.lrps().unwrap().len() - 1 {
+            let loc2 = LocationReference::Line { lrps: vec![full_ref.lrps().unwrap()[leg].clone(), full_ref.lrps().unwrap()[leg + 1].clone()] };
             let r = decode(&loc2, provider.graph(), &params, 12);
             eprintln!(
                 "  Leg {leg}: {} → {}  [lfrcnp={}, dnp=[{:.0},{:.0}]m]  → {}",
                 leg, leg + 1,
-                full_ref.lrps[leg].lfrcnp.map_or("-".into(), |v: u8| v.to_string()),
-                full_ref.lrps[leg].dnp.as_ref().map_or(0.0, |d| d.lb),
-                full_ref.lrps[leg].dnp.as_ref().map_or(0.0, |d| d.ub),
+                full_ref.lrps().unwrap()[leg].lfrcnp.map_or("-".into(), |v: u8| v.to_string()),
+                full_ref.lrps().unwrap()[leg].dnp.as_ref().map_or(0.0, |d| d.lb),
+                full_ref.lrps().unwrap()[leg].dnp.as_ref().map_or(0.0, |d| d.ub),
                 match &r {
-                    Ok(d) => format!("OK ({} segs)", d.path.len()),
+                    Ok(d) => format!("OK ({} segs)", d.as_network().unwrap().path.len()),
                     Err(e) => format!("FAIL: {e:?}"),
                 },
             );
@@ -454,13 +457,13 @@ mod integration {
             p2.lfrcnp_tolerance = tol;
             p2.max_candidates_per_lrp = 0; // unlimited
             eprintln!("\n--- lfrcnp_tolerance={tol}, unlimited candidates ---");
-            for leg in 0..full_ref.lrps.len() - 1 {
-                let loc2 = LocationReference::line(vec![full_ref.lrps[leg].clone(), full_ref.lrps[leg + 1].clone()]);
+            for leg in 0..full_ref.lrps().unwrap().len() - 1 {
+                let loc2 = LocationReference::Line { lrps: vec![full_ref.lrps().unwrap()[leg].clone(), full_ref.lrps().unwrap()[leg + 1].clone()] };
                 let r = decode(&loc2, provider.graph(), &p2, 12);
                 eprintln!(
                     "  Leg {leg}: {}",
                     match &r {
-                        Ok(d) => format!("OK ({} segs)", d.path.len()),
+                        Ok(d) => format!("OK ({} segs)", d.as_network().unwrap().path.len()),
                         Err(e) => format!("FAIL: {e:?}"),
                     },
                 );
@@ -489,9 +492,9 @@ mod integration {
             "CwV/ECHkoiORC//N/bIjjRYD+fy+I44FAAv+0yOOAwAL/2cbcn3flfluGwM=",
         ).expect("v3 decode failed");
 
-        let lrp4 = full_ref.lrps[4].clone();
-        let lrp5 = full_ref.lrps[5].clone();
-        let loc_ref = LocationReference::line(vec![lrp4.clone(), lrp5.clone()]);
+        let lrp4 = full_ref.lrps().unwrap()[4].clone();
+        let lrp5 = full_ref.lrps().unwrap()[5].clone();
+        let loc_ref = LocationReference::Line { lrps: vec![lrp4.clone(), lrp5.clone()] };
 
         eprintln!(
             "LRP[4→0]: ({:.6}, {:.6})  frc={} fow={} lfrcnp={}  dnp=[{:.0},{:.0}]m  bearing=[{:.2},{:.2}]°",
@@ -514,7 +517,7 @@ mod integration {
             params.lfrcnp_tolerance, params.max_astar_expansions,
         );
 
-        let keys = prefetch_tile_keys(&loc_ref.lrps, &params, provider.zoom);
+        let keys = prefetch_tile_keys(loc_ref.lrps().unwrap(), &params, provider.zoom);
         eprintln!("Prefetching {} tile(s) …", keys.len());
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
@@ -522,6 +525,7 @@ mod integration {
         let result = decode(&loc_ref, provider.graph(), &params, 12);
         match result {
             Ok(decoded) => {
+                let decoded = decoded.as_network().expect("expected network-based location");
                 eprintln!("Leg-4 decode OK: {} segment(s)", decoded.path.len());
                 if let Some(wkt) = path_to_wkt(&decoded.path, decoded.pos_offset.map_or(0.0, |i| i.lb), decoded.neg_offset.map_or(0.0, |i| i.lb), decoded.first_lrp_arc_m, decoded.last_lrp_arc_m, decoded.first_seg_traversal, decoded.last_seg_traversal, provider.graph()) {
                     println!("{wkt}");
@@ -553,8 +557,8 @@ mod integration {
         let loc_ref = decode_v3_base64("CwV0fiHP2iupDwRE/tYrqgr/6v50KyIf")
             .expect("v3 decode failed");
 
-        eprintln!("LRP count: {}", loc_ref.lrps.len());
-        for (i, lrp) in loc_ref.lrps.iter().enumerate() {
+        eprintln!("LRP count: {}", loc_ref.lrps().unwrap().len());
+        for (i, lrp) in loc_ref.lrps().unwrap().iter().enumerate() {
             eprintln!(
                 "LRP[{i}]: ({:.6}, {:.6})  frc={} fow={} lfrcnp={}{}  pos_offset={:?}  neg_offset={:?}",
                 lrp.coord.0, lrp.coord.1, lrp.frc, lrp.fow,
@@ -565,12 +569,13 @@ mod integration {
         }
 
         let params = DecodeParams::preset(Preset::Permissive);
-        let keys = prefetch_tile_keys(&loc_ref.lrps, &params, provider.zoom);
+        let keys = prefetch_tile_keys(loc_ref.lrps().unwrap(), &params, provider.zoom);
         eprintln!("Prefetching {} tile(s) …", keys.len());
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
         let result = decode(&loc_ref, provider.graph(), &params, 12).expect("decode failed");
+        let result = result.as_network().expect("expected network-based location");
         assert!(!result.path.is_empty(), "path must be non-empty");
 
         let pos_lb = result.pos_offset.map_or(0.0, |i| i.lb);
@@ -615,7 +620,7 @@ mod integration {
             .expect("v3 decode failed");
 
         eprintln!("=== Pos-offset reference: CwV1BCHeEDv1BQEj/3s7WiY= ===");
-        for (i, lrp) in loc_ref.lrps.iter().enumerate() {
+        for (i, lrp) in loc_ref.lrps().unwrap().iter().enumerate() {
             eprintln!(
                 "LRP[{i}]: ({:.6}, {:.6})  frc={} fow={}  lfrcnp={}  bearing=[{:.2},{:.2}]{}{}",
                 lrp.coord.0, lrp.coord.1, lrp.frc, lrp.fow,
@@ -628,18 +633,19 @@ mod integration {
 
         let mut params = DecodeParams::preset(Preset::Permissive);
         params.trace_level = TraceLevel::Summary;
-        let keys = prefetch_tile_keys(&loc_ref.lrps, &params, provider.zoom);
+        let keys = prefetch_tile_keys(loc_ref.lrps().unwrap(), &params, provider.zoom);
         eprintln!("Prefetching {} tile(s)…", keys.len());
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
         let result = decode(&loc_ref, provider.graph(), &params, 12).expect("decode failed");
+        let result = result.as_network().expect("expected network-based location");
 
         // Dump candidates from trace.
         if let Some(trace) = &result.trace {
             for event in &trace.events {
                 if let DecodeEvent::CandidatesRanked { lrp_idx, accepted, .. } = event {
-                    let lrp = &loc_ref.lrps[*lrp_idx];
+                    let lrp = &loc_ref.lrps().unwrap()[*lrp_idx];
                     eprintln!(
                         "\n--- LRP[{lrp_idx}] candidates: {} accepted ---",
                         accepted.len(),
@@ -690,8 +696,8 @@ mod integration {
             }
         }
         eprintln!("Route segment total: {:.1}m  (DNP window: [{:.1},{:.1}]m)", total_len,
-            loc_ref.lrps[0].dnp.map_or(0.0, |d| d.lb),
-            loc_ref.lrps[0].dnp.map_or(0.0, |d| d.ub));
+            loc_ref.lrps().unwrap()[0].dnp.map_or(0.0, |d| d.lb),
+            loc_ref.lrps().unwrap()[0].dnp.map_or(0.0, |d| d.ub));
 
         // Dump geometry of the top two LRP[0] candidates (9290 and 9700) for comparison.
         eprintln!("\n--- Key candidate segments ---");
@@ -727,11 +733,12 @@ mod integration {
         let mut p2 = DecodeParams::preset(Preset::Permissive);
         p2.trace_level = TraceLevel::Summary;
         p2.candidate_search_radius_m = 500.0;
-        let keys2 = prefetch_tile_keys(&loc_ref.lrps, &p2, provider.zoom);
+        let keys2 = prefetch_tile_keys(loc_ref.lrps().unwrap(), &p2, provider.zoom);
         provider.load_tiles(&keys2).expect("tile load failed");
         eprintln!("Graph (500m): {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
         let result2 = decode(&loc_ref, provider.graph(), &p2, 12).expect("decode failed with 500m radius");
+        let result2 = result2.as_network().expect("expected network-based location");
         if let Some(trace2) = &result2.trace {
             for event in &trace2.events {
                 if let DecodeEvent::CandidatesRanked { lrp_idx, accepted, .. } = event {
@@ -772,8 +779,8 @@ mod integration {
         let loc_ref = decode_v3_base64("CwV1BCHeEDv1BQEj/3s7WiY=")
             .expect("v3 decode failed");
 
-        eprintln!("LRP count: {}", loc_ref.lrps.len());
-        for (i, lrp) in loc_ref.lrps.iter().enumerate() {
+        eprintln!("LRP count: {}", loc_ref.lrps().unwrap().len());
+        for (i, lrp) in loc_ref.lrps().unwrap().iter().enumerate() {
             eprintln!(
                 "LRP[{i}]: ({:.6}, {:.6})  frc={} fow={} lfrcnp={}{}  pos_offset={:?}  neg_offset={:?}",
                 lrp.coord.0, lrp.coord.1, lrp.frc, lrp.fow,
@@ -784,12 +791,13 @@ mod integration {
         }
 
         let params = DecodeParams::preset(Preset::Permissive);
-        let keys = prefetch_tile_keys(&loc_ref.lrps, &params, provider.zoom);
+        let keys = prefetch_tile_keys(loc_ref.lrps().unwrap(), &params, provider.zoom);
         eprintln!("Prefetching {} tile(s) …", keys.len());
         provider.load_tiles(&keys).expect("tile load failed");
         eprintln!("Graph: {} segs, {} nodes", provider.graph().segments.len(), provider.graph().nodes.len());
 
         let result = decode(&loc_ref, provider.graph(), &params, 12).expect("decode failed");
+        let result = result.as_network().expect("expected network-based location");
         assert!(!result.path.is_empty(), "path must be non-empty");
 
         let pos_lb = result.pos_offset.map_or(0.0, |i| i.lb);
