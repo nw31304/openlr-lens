@@ -17,6 +17,18 @@ function tileBytes(res) {
   if (!res?.data) return null;
   return new Uint8Array(res.data);
 }
+
+/** Build a client-side decode-failure result (e.g. giving up after exceeding the
+ *  dynamic tile-load cap) that still has real format/location_type/lrps to show —
+ *  decode()'s own Rust-side failures include this metadata, but a failure invented
+ *  entirely in JS has no way to without asking the decoder for it separately. */
+function clientDecodeFailure(message) {
+  let summary = { format: '', location_type: 'Line', lrps: [] };
+  try {
+    if (_decoder) summary = JSON.parse(_decoder.reference_summary());
+  } catch { /* decoder unavailable or reference_summary() missing — use fallback */ }
+  return { ok: false, error: message, segments: [], ...summary };
+}
 /** segment_id → { tile_key, local_index } — rebuilt after every decode */
 let _segIdToTile = new Map();
 /** tile_key → GeoJSON features[] — built from tile bytes during decode */
@@ -421,20 +433,37 @@ export const useStore = create(persist(
       const snapsJson = JSON.stringify(snaps);
       const attemptedTiles = new Set();
       const MAX_DYNAMIC_LOADS = 10;
+      let dynamicLoads = 0;
       let result = null;
-      for (let attempt = 0; attempt <= MAX_DYNAMIC_LOADS; attempt++) {
+      while (true) {
         result = JSON.parse(_decoder.decode_forced(snapsJson));
         if (!result.needs_tile) break;
+
+        if (dynamicLoads >= MAX_DYNAMIC_LOADS) {
+          const msg = `Forced decode exceeded the maximum of ${MAX_DYNAMIC_LOADS} dynamically-loaded tiles. Try reducing the path search factor first: a smaller value often lets a decode complete (with real trace data to diagnose the actual cause) instead of repeatedly restarting the search on unrelated dead-end tiles.`;
+          console.warn(`[forced-decode] ${msg}`);
+          result = clientDecodeFailure(msg);
+          break;
+        }
+
         const [z, x, y] = result.needs_tile;
         const tileKey = `${z}/${x}/${y}`;
-        if (attemptedTiles.has(tileKey)) break;
+        if (attemptedTiles.has(tileKey)) {
+          const msg = `A* re-requested tile ${tileKey} that was already loaded — this indicates an internal bug`;
+          console.warn(`[forced-decode] ${msg}`);
+          result = clientDecodeFailure(msg);
+          break;
+        }
         attemptedTiles.add(tileKey);
+        dynamicLoads++;
         try {
           const res = await _pmtiles.getZxy(z, x, y);
           const bytes = tileBytes(res);
           _decoder.load_tile(z, x, y, bytes ?? new Uint8Array(0));
         } catch (e) {
-          console.warn(`[forced-decode] tile ${tileKey} load failed:`, e?.message ?? e);
+          const msg = `Failed to load tile ${tileKey}: ${e?.message ?? e}`;
+          console.warn(`[forced-decode] ${msg}`);
+          result = clientDecodeFailure(msg);
           break;
         }
       }
@@ -464,7 +493,7 @@ export const useStore = create(persist(
         replayStep:  0,
       });
     } catch (e) {
-      set({ forcedDecoding: false, forcedDecodeResult: { ok: false, error: String(e), segments: [] } });
+      set({ forcedDecoding: false, forcedDecodeResult: clientDecodeFailure(String(e)) });
     }
   },
 
@@ -544,12 +573,19 @@ export const useStore = create(persist(
       // Run decode, loading any tiles A* discovers it needs along the way.
       // Each call either returns a result (ok or error) or a { needs_tile: [z,x,y] }
       // signal.  We cap retries to prevent runaway in degenerate cases.
+      //
+      // Every branch that stops this loop early MUST leave `result` as a proper
+      // { ok: false, error, segments: [], lrps: [] } object, never as a leftover
+      // { needs_tile: [...] } blob — the latter has none of the fields the rest of
+      // this function (and the UI toast) expect, so it silently surfaces as
+      // "Decode failed" with no message and "undefined" segments/lrps.
       const attemptedTiles = new Set(startResult.tiles.map(([z,x,y]) => `${z}/${x}/${y}`));
       const MAX_DYNAMIC_LOADS = 20;
-      for (let attempt = 0; attempt <= MAX_DYNAMIC_LOADS; attempt++) {
+      let dynamicLoads = 0;
+      while (true) {
         const tDecode0 = performance.now();
         result = JSON.parse(_decoder.decode());
-        console.log(`[timing] decode() attempt ${attempt}: ${(performance.now()-tDecode0).toFixed(1)} ms`);
+        console.log(`[timing] decode() attempt ${dynamicLoads}: ${(performance.now()-tDecode0).toFixed(1)} ms`);
         if (!result.needs_tile) {
           console.log(
             `[decode-result] ok=${result.ok} format="${result.format ?? '(absent)'}"` +
@@ -557,9 +593,27 @@ export const useStore = create(persist(
             ` trace=${result.trace == null ? 'ABSENT' : ('events=' + (result.trace.events?.length ?? '?'))}` +
             ` error="${result.error ?? ''}"`
           );
+          break;
         }
 
-        if (!result.needs_tile) break;
+        if (dynamicLoads >= MAX_DYNAMIC_LOADS) {
+          // A* aborts its entire search and restarts from scratch on the very first
+          // boundary node it finds needing an unloaded tile -- even one belonging to
+          // a dead-end branch that will never end up on the real path (e.g. the far
+          // shore of a body of water the straight-line heuristic can't see is
+          // impassable). Many restarts, each individually bounded by
+          // dnp.ub * max_path_search_factor but touching a different dead-end branch,
+          // can union into a much wider tile footprint than any single run explores.
+          // Lowering the search factor shrinks each run's blast radius, making it far
+          // more likely one completes without hitting an unloaded boundary node at
+          // all -- which is what actually surfaces trace data to diagnose the real
+          // problem (e.g. an LFRCNP tolerance letting A* wander through low-class
+          // roads). Hitting this cap is a symptom, not the disease.
+          const msg = `Decode exceeded the maximum of ${MAX_DYNAMIC_LOADS} dynamically-loaded tiles — the route may span too large an area, or too many low-FRC roads are being explored. Try reducing the path search factor first: a smaller value often lets a decode complete (with real trace data to diagnose the actual cause) instead of repeatedly restarting the search on unrelated dead-end tiles.`;
+          console.warn(`[tile] ${msg}`);
+          result = clientDecodeFailure(msg);
+          break;
+        }
 
         const [z, x, y] = result.needs_tile;
         const tileKey = `${z}/${x}/${y}`;
@@ -567,11 +621,14 @@ export const useStore = create(persist(
         if (attemptedTiles.has(tileKey)) {
           // Guard: same tile requested twice means the graph didn't register it as
           // loaded (shouldn't happen, but prevents an infinite loop).
-          console.warn(`[tile] A* re-requested ${tileKey} — already attempted, stopping`);
+          const msg = `A* re-requested tile ${tileKey} that was already loaded — this indicates an internal bug`;
+          console.warn(`[tile] ${msg}`);
+          result = clientDecodeFailure(msg);
           break;
         }
         attemptedTiles.add(tileKey);
-        console.log(`[tile] A* needs ${tileKey} (dynamic load, attempt ${attempt + 1})`);
+        dynamicLoads++;
+        console.log(`[tile] A* needs ${tileKey} (dynamic load, attempt ${dynamicLoads})`);
 
         try {
           const res = await _pmtiles.getZxy(z, x, y);
@@ -585,7 +642,9 @@ export const useStore = create(persist(
             console.warn(`[tile] dynamic ${tileKey}: not in archive, marked empty`);
           }
         } catch (e) {
-          console.warn(`[tile] dynamic ${tileKey} load failed:`, e?.message ?? e);
+          const msg = `Failed to load tile ${tileKey}: ${e?.message ?? e}`;
+          console.warn(`[tile] ${msg}`);
+          result = clientDecodeFailure(msg);
           break;
         }
       }
@@ -679,7 +738,7 @@ export const useStore = create(persist(
       } else {
         // WASM throws plain strings via JsValue::from_str; JS Error objects have .message.
         const errorMsg = e instanceof Error ? e.message : String(e);
-        set({ decoding: false, decodeResult: { ok: false, error: errorMsg, segments: [] }, decodeToast: { message: errorMsg } });
+        set({ decoding: false, decodeResult: clientDecodeFailure(errorMsg), decodeToast: { message: errorMsg } });
       }
     }
   },

@@ -53,6 +53,22 @@ TPEG / ISO 21219-22 format:
 
 When a decode fails, work through these steps in order:
 
+0. Is there no trace data at all, with an error mentioning a dynamic tile-load cap
+   (e.g. "exceeded the maximum of N dynamically-loaded tiles")?
+   Yes → the decode never reached a final result to diagnose. A* aborts its entire
+   search and restarts from scratch the instant it finds a boundary node needing an
+   unloaded tile, even one on a dead-end branch that will never be part of the real
+   path (its heuristic is straight-line distance, so it has no notion of obstacles
+   like water — dead-end branches near the "wrong" shore of a strait or river are a
+   classic trigger). Enough restarts on enough different dead-end tiles exhausts the
+   cap before any single run completes. **Recommend reducing the path search factor
+   first** — it shrinks each run's blast radius and makes it far more likely one
+   completes without hitting an unloaded tile, which is what actually produces trace
+   data to diagnose the real cause (often an LFRCNP tolerance issue, per step 4 below
+   — but you can't get there without trace data first). Do not speculate about the
+   route or the map without trace data; say plainly that none is available yet and
+   this is the first step to get some.
+
 1. Did all LRPs generate at least one pre-scoring candidate?
    No → candidate search problem. Check: search radius too small, no or missing map data loaded for that region (especially FRC6/7).
 
@@ -71,7 +87,7 @@ When a decode fails, work through these steps in order:
 6. Did routing succeed but the DNP check fail?
    → A route was found but its length falls outside the encoded distance window. Raise DNP tolerance or investigate why the routed length diverges from the encoded value.
 
-Never conflate step 1 (candidate rejection) with steps 2–5 (routing failure) — they have different symptoms and different fixes.
+Never conflate step 1 (candidate rejection) with steps 2–5 (routing failure) — they have different symptoms and different fixes. Never treat step 0 as a routing/candidate diagnosis — it means no diagnosis is possible yet.
 
 
 ## Typical issues
@@ -84,6 +100,7 @@ Never conflate step 1 (candidate rejection) with steps 2–5 (routing failure) �
 4. Search radius > 30m is rarely needed
 5. Missing road segments most frequently occur with FRC >= 5 (service roads, etc)
 6. If adjacent LRPs are snapped to the same point, the OpenLR may decode, but the result is certainly inaccurate.  Suspect missing road segments.
+7. Hitting the dynamic tile-load cap (no trace, error mentions "dynamically-loaded tiles") means the search kept restarting on dead-end boundary tiles and never completed a run — it is not itself the root cause. Suggest reducing the path search factor first; the real cause (frequently LFRCNP tolerance) is usually only visible once a smaller factor lets a run finish and produce trace data.
    
 
 ## Worked example — LFRCNP blocking

@@ -557,6 +557,29 @@ impl Decoder {
         self.zoom
     }
 
+    /// `{ "format": ..., "location_type": ..., "lrps": [...] }` for the currently
+    /// loaded reference, independent of decode success.
+    ///
+    /// `decode()` only includes this metadata in a result it builds itself (success
+    /// or a genuine Rust-side failure) — it has no way to include it in a
+    /// client-side-synthesized failure, e.g. when the JS layer gives up after
+    /// exceeding its dynamic tile-load cap. Call this to enrich such a result so
+    /// the UI's Reference/Trace panels have real format/location_type/lrps to show
+    /// instead of falling back to placeholders.
+    pub fn reference_summary(&self) -> String {
+        let Some(loc_ref) = &self.location_ref else {
+            return serde_json::json!({
+                "format": self.openlr_format, "location_type": "Line", "lrps": [],
+            }).to_string();
+        };
+        let lrps_slice = loc_ref.lrps().unwrap_or(&[]);
+        serde_json::json!({
+            "format": self.openlr_format,
+            "location_type": loc_ref.type_str(),
+            "lrps": lrp_info_vec(lrps_slice, &[], &[], &[]),
+        }).to_string()
+    }
+
     /// Return the internal graph segment ID for the segment at `(z, x, y, local_index)`,
     /// or -1 if that tile/index combination is not currently loaded.
     /// Useful for correlating map-click segments with trace log `segment_id` values.

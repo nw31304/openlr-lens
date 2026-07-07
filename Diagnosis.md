@@ -148,7 +148,42 @@ counts — could surface this as its own diagnosis bucket.
 
 ---
 
-## 5. Route found but DNP validation fails
+## 5. Decode aborted — dynamic tile-load cap exceeded
+
+*Trace events: none — the abort happens client-side, before any `decode()` call
+completes with a final result. `AStarTerminated`/`RouteFailed` are never reached,
+so there is no trace to inspect for this attempt.*
+
+A\* aborts its **entire** search and the browser restarts `decode()` from scratch
+the moment A\* pops any boundary node needing a tile that isn't loaded yet — even
+a node on a dead-end branch that will never end up on the real path. If several
+dead-end branches each need a different unloaded tile, the browser can burn
+through many restart cycles without ever completing a single uninterrupted A\*
+run, and hits its dynamic-tile-load cap (`MAX_DYNAMIC_LOADS`, currently 20)
+before A\* ever reaches its own termination. **[auto]**
+
+- **Heuristic can't see obstacles** — the A\* heuristic is straight-line
+  distance to the goal; it has no notion of impassable terrain (a body of
+  water, a border, a mountain range). Candidates near the "wrong" side of such
+  an obstacle look promising (low heuristic) but are dead ends requiring a long
+  detour, and each one visited can trigger its own restart 🔧🗺️
+- **`max_path_search_factor` too high** — each individual run is still bounded
+  to `dnp.ub × max_path_search_factor` (§4's distance cap), but a larger factor
+  widens the blast radius of every dead-end branch, increasing the chance any
+  one of them hits an unloaded tile before the real path is found. **Lowering
+  the factor is the fastest first step** — it makes a run far more likely to
+  complete without hitting this cap at all, which is what actually surfaces
+  trace data to diagnose the real problem 🔧 **[auto: suggested first in the
+  failure message]**
+- **The real underlying issue is often something else entirely** — hitting
+  this cap only prevents *seeing* the actual failure mode, it isn't the failure
+  mode itself. A permissive `lfrcnp_tolerance` letting A\* wander through many
+  low-class connector roads is a common root cause, only visible once a smaller
+  search factor lets a run complete far enough to reach §4's diagnostics 🔧
+
+---
+
+## 6. Route found but DNP validation fails
 
 *Trace events: `DnpChecked` (actual vs. window), `RouteFailed` with
 `reason.DnpOutOfRange { actual_m, window }`.* **[auto]**
@@ -169,7 +204,7 @@ The overshoot or undershoot in metres is shown directly.
 
 ---
 
-## 6. Offset trimming failure
+## 7. Offset trimming failure
 
 *Trace events: `OffsetApplied` (trim amount and interval).* **[trace]**
 
@@ -187,7 +222,7 @@ location.
 
 ---
 
-## 7. Silent misdecode — success returned, wrong path highlighted
+## 8. Silent misdecode — success returned, wrong path highlighted
 
 *No error is returned. This is the most important class to diagnose and the
 primary reason this tool exists.*
@@ -250,6 +285,7 @@ The planned **forced-decode mode** (CLAUDE.md §10) will automate root-cause ver
 | §4 Expansion limit | Summary | ✅ | — |
 | §4 Distance cap | Summary | ✅ | — |
 | §4 Graph disconnection | Summary (inferred) | ⚠️ heuristic gap | node/skip ratio heuristic |
-| §5 DNP mismatch | Summary | ✅ | — |
-| §6 Offset trimming | Summary | trace panel only | `OffsetFailed` event |
-| §7 Silent misdecode | Full | ❌ | forced-decode mode |
+| §5 Tile-load cap exceeded | none (aborts before any trace) | ✅ suggests reducing search factor | skip-and-continue instead of full restart |
+| §6 DNP mismatch | Summary | ✅ | — |
+| §7 Offset trimming | Summary | trace panel only | `OffsetFailed` event |
+| §8 Silent misdecode | Full | ❌ | forced-decode mode |
