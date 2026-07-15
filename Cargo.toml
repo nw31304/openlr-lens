@@ -4,6 +4,7 @@ members  = [
     "crates/openlr-codec",
     "crates/openlr-graph",
     "crates/openlr-engine",
+    "crates/openlr-encoder",
     "crates/openlr-provider",
     "crates/openlr-wasm",
 ]

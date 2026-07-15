@@ -33,9 +33,15 @@ pub enum EdgeSkipReason {
 /// the node — i.e. what you'd face standing at the junction looking into this
 /// road, regardless of which end of the segment `node` is or which way the
 /// segment is traversed. Used to measure the geometric angle between two roads
-/// meeting at a node. Returns `None` if `node` is not an endpoint of `seg` or
-/// the geometry is degenerate.
-fn bearing_away_from_node(seg: &NetworkSegment, node: NodeId) -> Option<f64> {
+/// meeting at a node (the turn-angle gate), and doubles as the OpenLR BEAR
+/// attribute computation for encoding: for a normal LRP this is "look into the
+/// outgoing leg" (forward-facing); for the last LRP of a location this is
+/// "look into the incoming leg, away from arrival" — which is exactly the
+/// whitepaper's reversed bearing convention for the last LRP (§5.2.4), with no
+/// special-casing needed since "away from node" already flips appropriately.
+/// Returns `None` if `node` is not an endpoint of `seg` or the geometry is
+/// degenerate.
+pub fn bearing_away_from_node(seg: &NetworkSegment, node: NodeId) -> Option<f64> {
     if seg.geometry.len() < 2 {
         return None;
     }
@@ -57,6 +63,12 @@ pub struct Graph {
     pub segments: HashMap<SegmentId, NetworkSegment>,
     pub nodes: HashMap<NodeId, NetworkNode>,
     outgoing: HashMap<NodeId, Vec<SegmentId>>,
+    /// Undirected topology: node → every (other_end_node, segment_id) touching it,
+    /// ignoring `Direction` entirely. Unlike `outgoing` (which reflects only what a
+    /// router may traverse), this is the raw real-world shape of the network —
+    /// needed for `is_valid_node`, which must see actual junction geometry, not
+    /// the direction-filtered routing view.
+    topology: HashMap<NodeId, Vec<(NodeId, SegmentId)>>,
     restrictions: Vec<TurnRestriction>,
     /// Spatial grid: grid-cell key → segment IDs whose geometry bbox overlaps that cell.
     /// Cell size ≈ 222 m; turns `segments_near` from O(total) to O(local density).
@@ -76,6 +88,7 @@ impl Graph {
             segments: HashMap::new(),
             nodes: HashMap::new(),
             outgoing: HashMap::new(),
+            topology: HashMap::new(),
             restrictions: Vec::new(),
             spatial_grid: HashMap::new(),
             loaded_tiles: HashSet::new(),
@@ -99,6 +112,12 @@ impl Graph {
         let id    = seg.id;
         let start = seg.start_node;
         let end   = seg.end_node;
+
+        self.topology.entry(start).or_default().push((end, id));
+        if end != start {
+            self.topology.entry(end).or_default().push((start, id));
+        }
+
         match seg.direction {
             Direction::Forward | Direction::Both => {
                 self.outgoing.entry(start).or_default().push(id);
@@ -195,6 +214,58 @@ impl Graph {
         self.restrictions.iter().any(|r| {
             r.from_seg == from_seg && r.via_node == via_node && r.to_seg == to_seg
         })
+    }
+
+    /// OpenLR Rule-4 (whitepaper §6, Figures 17-18): is `node` a genuine routing
+    /// decision point, or can a shortest-path search safely step over it? Encoders
+    /// must anchor LRPs on valid nodes wherever possible, because real junctions
+    /// are far more likely to be represented consistently across different map
+    /// datasets than an arbitrary digitized shape vertex.
+    ///
+    /// - 0 or 1 distinct neighbors → a genuine dead end. Nothing to pass through,
+    ///   so it counts as valid (this case isn't a "pass-through" at all).
+    /// - Exactly 2 distinct neighbors → a simple corridor (one-way per Figure 17,
+    ///   or two-way per Figure 18) — invalid unless a U-turn is possible there.
+    /// - 3+ distinct neighbors → valid. (v1 does not implement openlr-tt's further
+    ///   generalization that a higher-degree node can *still* be invalid if every
+    ///   neighbor pairs up into a collinear through-route, e.g. two roads merely
+    ///   crossing with no real interchange. This is a deliberately conservative
+    ///   simplification: it can only make us treat a node as valid when the full
+    ///   spec would not, which costs at most one fewer expansion hop — never a
+    ///   correctness bug, since the "no valid node reachable" escape hatch already
+    ///   handles the opposite gap.)
+    pub fn is_valid_node(&self, node: NodeId) -> bool {
+        let touching = match self.topology.get(&node) {
+            Some(t) => t,
+            None => return true,
+        };
+        let distinct: HashSet<NodeId> = touching.iter().map(|(other, _)| *other).collect();
+        match distinct.len() {
+            0 | 1 => true,
+            2 => self.uturn_possible_at(touching),
+            _ => true,
+        }
+    }
+
+    /// Every segment touching `node`, from the raw undirected topology (ignoring
+    /// `Direction`) — the real-world network shape. Used by encoding's
+    /// valid-node expansion (walking outward to find a robust LRP anchor), as
+    /// opposed to `successors()`'s FRC/direction-filtered routing view.
+    pub fn topology_neighbors(&self, node: NodeId) -> &[(NodeId, SegmentId)] {
+        self.topology.get(&node).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// v1 approximation of "a U-turn is possible at this node": true iff there are
+    /// multiple distinct segments connecting it to the *same* neighbor (e.g. two
+    /// parallel one-way carriageways forming a real turnaround point). Does not
+    /// model exotic single-segment U-turn geometries — again, the safe direction,
+    /// since the expansion escape hatch covers whatever this misses.
+    fn uturn_possible_at(&self, touching: &[(NodeId, SegmentId)]) -> bool {
+        let mut counts: HashMap<NodeId, u32> = HashMap::new();
+        for (other, _seg) in touching {
+            *counts.entry(*other).or_insert(0) += 1;
+        }
+        counts.values().any(|&c| c > 1)
     }
 
     /// Angular deviation from a straight-through continuation at `node`, in
@@ -385,6 +456,55 @@ mod tests {
         assert!(skipped.iter().any(|(id, reason)| {
             *id == SegmentId(3) && matches!(reason, EdgeSkipReason::SharpTurn { deviation_deg } if *deviation_deg > 150.0)
         }));
+    }
+
+    #[test]
+    fn dead_end_is_valid() {
+        let mut g = Graph::new();
+        g.add_segment(make_seg(1, 0, 1, 3, Direction::Both));
+        assert!(g.is_valid_node(NodeId(1)), "node 1 has only one neighbor — a dead end");
+    }
+
+    #[test]
+    fn one_way_pass_through_is_invalid() {
+        // 0 -> 1 -> 2, strictly one-way: node 1 has exactly one viable through-path.
+        let mut g = Graph::new();
+        g.add_segment(make_seg(1, 0, 1, 3, Direction::Forward));
+        g.add_segment(make_seg(2, 1, 2, 3, Direction::Forward));
+        assert!(!g.is_valid_node(NodeId(1)), "one-way corridor (Figure 17) should be invalid");
+    }
+
+    #[test]
+    fn two_way_pass_through_is_invalid() {
+        // 0 <-> 1 <-> 2, bidirectional, no other branch, no parallel segments.
+        let mut g = Graph::new();
+        g.add_segment(make_seg(1, 0, 1, 3, Direction::Both));
+        g.add_segment(make_seg(2, 1, 2, 3, Direction::Both));
+        assert!(!g.is_valid_node(NodeId(1)), "two-way corridor (Figure 18) should be invalid absent a U-turn");
+    }
+
+    #[test]
+    fn parallel_segments_to_same_neighbor_allow_uturn() {
+        // Node 1 touches two distinct neighbors (0 and 2), which would normally
+        // make it an invalid 2-neighbor pass-through — but there are two distinct
+        // one-way segments both connecting it to neighbor 2 (e.g. a divided
+        // carriageway), which is this v1's approximation of "a U-turn is possible
+        // here", so node 1 counts as valid.
+        let mut g = Graph::new();
+        g.add_segment(make_seg(1, 0, 1, 3, Direction::Both));
+        g.add_segment(make_seg(2, 1, 2, 3, Direction::Forward));
+        g.add_segment(make_seg(3, 2, 1, 3, Direction::Forward));
+        assert!(g.is_valid_node(NodeId(1)), "parallel segments to the same neighbor should allow a U-turn");
+    }
+
+    #[test]
+    fn real_branch_is_valid() {
+        // Node 1 connects to three distinct neighbors — a genuine junction.
+        let mut g = Graph::new();
+        g.add_segment(make_seg(1, 0, 1, 3, Direction::Both));
+        g.add_segment(make_seg(2, 1, 2, 3, Direction::Both));
+        g.add_segment(make_seg(3, 1, 3, 3, Direction::Both));
+        assert!(g.is_valid_node(NodeId(1)), "a real 3-way branch should be valid");
     }
 
     #[test]

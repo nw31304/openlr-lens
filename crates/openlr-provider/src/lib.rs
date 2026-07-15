@@ -90,10 +90,11 @@ impl PmtilesProvider {
         if self.loaded_tiles.contains(&key) {
             return Ok(());
         }
-        // Fetch tile bytes; missing tiles are silently skipped (sparse coverage).
-        if let Some(bytes) = self.reader.get_tile(key)? {
-            self.loader.load_tile(&bytes)?;
-        }
+        // `load_tile_at` marks the tile loaded on the *graph* even when absent
+        // (empty bytes) — required so A*'s boundary check treats it as a
+        // genuine dead end instead of requesting it again on every leg.
+        let bytes = self.reader.get_tile(key)?.unwrap_or_default();
+        self.loader.load_tile_at(key.z, key.x, key.y, &bytes)?;
         self.loaded_tiles.insert(key);
         Ok(())
     }

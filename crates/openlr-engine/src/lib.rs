@@ -221,6 +221,25 @@ pub fn decode(
         // validation is the ultimate safety net for false positives.
         let nearby_threshold = params.candidate_search_radius_m * 0.25;
         let precheck: Option<(Vec<SegmentId>, f64, Vec<f64>, Vec<usize>)> = 'precheck: {
+            // The all-top-candidate combination (index 0 for every LRP) has the
+            // lowest possible aggregate score by construction — no other
+            // combination, trivial or not, can ever beat it. If it routes
+            // successfully, it is unconditionally correct, so try it before the
+            // same-segment/adjacent scan below: otherwise a worse-scored but
+            // "trivial" (zero-interior-hop) pair can win over the true best
+            // candidate merely because the best candidate needed one interior
+            // segment to route to, which the scan below doesn't consider.
+            let top_indices: Vec<usize> = vec![0; all_candidates.len()];
+            let mut top_failed_leg = 0usize;
+            if let Some((p, len, legs)) = try_route_combination(
+                &top_indices, &all_candidates, lrps, graph, params, t,
+                &mut route_cache, &mut needs_tile, zoom, &mut top_failed_leg,
+            ) {
+                break 'precheck Some((p, len, legs, top_indices));
+            }
+            if needs_tile.is_some() { break 'precheck None; }
+            deepest_failed_leg = deepest_failed_leg.max(top_failed_leg);
+
             if lrps.len() == 2 {
                 for (i, from_cand) in all_candidates[0].iter().enumerate() {
                     for (j, to_cand) in all_candidates[1].iter().enumerate() {

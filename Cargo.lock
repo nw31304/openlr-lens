@@ -93,6 +93,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "openlr-encoder"
+version = "0.1.0"
+dependencies = [
+ "openlr-codec",
+ "openlr-engine",
+ "openlr-graph",
+ "openlr-provider",
+ "thiserror",
+]
+
+[[package]]
 name = "openlr-engine"
 version = "0.1.0"
 dependencies = [

@@ -1,8 +1,11 @@
 //! PMTiles v3 reader.
 //!
-//! Reads a local `.pmtiles` archive and returns raw tile bytes by `TileKey`.
-//! Directories are gzip-compressed; individual tile payloads are uncompressed
-//! (as written by the openlrlens pipeline).
+//! Reads a local `.pmtiles` archive and returns raw (decompressed) tile bytes
+//! by `TileKey`. Directories are always gzip-compressed per the PMTiles v3
+//! spec. Tile payload compression is per-archive (header byte 98,
+//! `tile_compression`) — some pipelines write it uncompressed, others (e.g.
+//! larger world-extent archives) gzip it; this reader honors whichever the
+//! archive declares rather than assuming one or the other.
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::fs::File;
@@ -25,6 +28,8 @@ pub enum PmtilesError {
     TileNotFound { z: u8, x: u32, y: u32 },
     #[error("directory decompression failed: {0}")]
     Decompress(String),
+    #[error("unsupported tile compression code {0} (only none/gzip are supported)")]
+    UnsupportedTileCompression(u8),
 }
 
 // ── Directory entry ───────────────────────────────────────────────────────────
@@ -48,6 +53,8 @@ pub struct PmtilesReader {
     leaf_dirs_offset: u64,
     root_entries: Vec<DirEntry>,
     min_zoom: u8,
+    /// Header byte 98: 0=Unknown, 1=None, 2=Gzip, 3=Brotli, 4=Zstd.
+    tile_compression: u8,
 }
 
 impl PmtilesReader {
@@ -74,6 +81,7 @@ impl PmtilesReader {
         let leaf_dirs_offset = u64_le(&hdr, 40);
         let _leaf_dirs_length= u64_le(&hdr, 48);
         let tile_data_offset = u64_le(&hdr, 56);
+        let tile_compression = hdr[98];
         let min_zoom         = hdr[100];
 
         // ── Root directory ───────────────────────────────────────────────────
@@ -84,10 +92,11 @@ impl PmtilesReader {
             .map_err(|e| PmtilesError::Decompress(e.to_string()))?;
         let root_entries = parse_directory(&root_bytes);
 
-        Ok(Self { file, tile_data_offset, leaf_dirs_offset, root_entries, min_zoom })
+        Ok(Self { file, tile_data_offset, leaf_dirs_offset, root_entries, min_zoom, tile_compression })
     }
 
-    /// Read the raw tile bytes for `key`. Returns `None` if the tile is absent.
+    /// Read the raw (decompressed) tile bytes for `key`. Returns `None` if the
+    /// tile is absent.
     pub fn get_tile(&mut self, key: TileKey) -> Result<Option<Vec<u8>>, PmtilesError> {
         let tile_id = xyz_to_tile_id(key.z, key.x, key.y);
         match self.find_entry(&self.root_entries.clone(), tile_id)? {
@@ -97,6 +106,11 @@ impl PmtilesReader {
                 self.file.seek(SeekFrom::Start(abs_offset))?;
                 let mut data = vec![0u8; entry.length as usize];
                 self.file.read_exact(&mut data)?;
+                let data = match self.tile_compression {
+                    0 | 1 => data, // Unknown/None: pass through as-is.
+                    2 => decompress_gzip(&data).map_err(|e| PmtilesError::Decompress(e.to_string()))?,
+                    other => return Err(PmtilesError::UnsupportedTileCompression(other)),
+                };
                 Ok(Some(data))
             }
         }
