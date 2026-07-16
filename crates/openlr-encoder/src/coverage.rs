@@ -138,11 +138,49 @@ fn common_prefix_len(a: &[SegmentId], b: &[SegmentId]) -> usize {
 }
 
 /// The node reached by walking `segments` in order, starting from `node`.
+///
+/// Topology-only (ignores `Direction`) — safe here because every current
+/// caller already only ever passes a path whose direction legality is
+/// guaranteed by construction: A*-routed (`shortest_path` respects
+/// `Direction`) or backward search over a path already validated elsewhere
+/// (`best_intermediate_position`). For a path that arrives from *outside*
+/// this crate with no such guarantee (e.g. a caller-specified segment
+/// list), use `trace_end_node_validated` instead — see CLAUDE.md
+/// Invariant 10 for why this distinction matters.
 pub(crate) fn trace_end_node(graph: &Graph, mut node: NodeId, segments: &[SegmentId]) -> Option<NodeId> {
     for seg_id in segments {
         node = other_end(graph, *seg_id, node)?;
     }
     Some(node)
+}
+
+/// Like `trace_end_node`, but for untrusted input: also checks that each
+/// segment is actually departable from the node the walk arrived at
+/// (`Graph::outgoing_segments`), not just that it touches it. Distinguishes
+/// "doesn't connect at all" (`EncodeError::Disconnected`) from "connects,
+/// but only in the direction this path can't use"
+/// (`EncodeError::IllegalDirection`) so a caller gets an actionable error
+/// rather than a silently mis-encoded reference.
+pub(crate) fn trace_end_node_validated(
+    graph: &Graph,
+    mut node: NodeId,
+    segments: &[SegmentId],
+) -> Result<NodeId, crate::EncodeError> {
+    for (index, &seg_id) in segments.iter().enumerate() {
+        if graph.outgoing_segments(node).contains(&seg_id) {
+            // `outgoing_segments` already implies `other_end` will succeed.
+            node = other_end(graph, seg_id, node).expect("outgoing_segments implies connectivity");
+            continue;
+        }
+        let touches_node = graph.segments.get(&seg_id)
+            .is_some_and(|seg| seg.start_node == node || seg.end_node == node);
+        return Err(if touches_node {
+            crate::EncodeError::IllegalDirection { index, segment: seg_id }
+        } else {
+            crate::EncodeError::Disconnected { index }
+        });
+    }
+    Ok(node)
 }
 
 /// The node at the far end of `seg_id` from `entered_from`.
@@ -306,6 +344,44 @@ mod tests {
         assert_eq!(other_end(&g, SegmentId(1), NodeId(0)), Some(NodeId(1)));
         assert_eq!(other_end(&g, SegmentId(1), NodeId(1)), Some(NodeId(0)));
         assert_eq!(other_end(&g, SegmentId(1), NodeId(9)), None);
+    }
+
+    #[test]
+    fn trace_end_node_validated_accepts_a_legally_directed_path() {
+        let mut g = Graph::new();
+        g.add_segment(NetworkSegment {
+            id: SegmentId(1), start_node: NodeId(0), end_node: NodeId(1),
+            geometry: vec![(0.0, 0.0), (0.001, 0.0)], length_m: 100.0,
+            frc: 3, fow: 3, direction: Direction::Forward, stable_id: String::new(),
+        });
+        g.add_segment(seg(2, 1, 2, 100.0)); // Both -- departable either way
+        let end = trace_end_node_validated(&g, NodeId(0), &[SegmentId(1), SegmentId(2)]).unwrap();
+        assert_eq!(end, NodeId(2));
+    }
+
+    #[test]
+    fn trace_end_node_validated_rejects_a_wrong_direction_one_way() {
+        // Seg 1 is one-way Forward (0->1 only) -- walking it starting from
+        // node 1 requires illegal travel, even though it topologically
+        // touches node 1 (trace_end_node/other_end would happily accept it).
+        let mut g = Graph::new();
+        g.add_segment(NetworkSegment {
+            id: SegmentId(1), start_node: NodeId(0), end_node: NodeId(1),
+            geometry: vec![(0.0, 0.0), (0.001, 0.0)], length_m: 100.0,
+            frc: 3, fow: 3, direction: Direction::Forward, stable_id: String::new(),
+        });
+        let err = trace_end_node_validated(&g, NodeId(1), &[SegmentId(1)]).unwrap_err();
+        assert!(matches!(err, crate::EncodeError::IllegalDirection { index: 0, segment: SegmentId(1) }));
+    }
+
+    #[test]
+    fn trace_end_node_validated_reports_genuine_disconnection_separately() {
+        let mut g = Graph::new();
+        g.add_segment(seg(1, 0, 1, 100.0));
+        // Segment 2 doesn't touch node 1 at all (it's over on the 5-6 pair).
+        g.add_segment(seg(2, 5, 6, 100.0));
+        let err = trace_end_node_validated(&g, NodeId(0), &[SegmentId(1), SegmentId(2)]).unwrap_err();
+        assert!(matches!(err, crate::EncodeError::Disconnected { index: 1 }));
     }
 
     #[test]

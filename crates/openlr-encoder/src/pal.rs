@@ -32,6 +32,17 @@ pub fn encode_pal(graph: &Graph, input: &PalLocationInput, max_turn_deviation_de
     } else {
         return Err(EncodeError::UnknownNode(input.start_node));
     };
+    // `input.start_node` is one of the segment's two endpoints (checked
+    // above), but that alone doesn't mean it's legal to *depart* from there
+    // -- a one-way segment can only be entered at that end, not left from
+    // it. Every existing caller happens to already guarantee this (the
+    // interactive UI's `snap_point` was fixed to only ever produce a legal
+    // start_node), but PAL has no downstream A*/coverage-sweep step to catch
+    // a wrong-direction pick the way Line does -- the segment itself *is*
+    // the path, verbatim. See CLAUDE.md Invariant 10.
+    if !graph.outgoing_segments(input.start_node).contains(&input.line) {
+        return Err(EncodeError::IllegalDirection { index: 0, segment: input.line });
+    }
 
     // Table 56 Step 2: expand both ends to valid nodes (Rule-4) — but unlike
     // `line::encode_line`'s boundary legs, PAL has exactly one leg *always*
@@ -172,6 +183,29 @@ mod tests {
         let tpeg = openlr_codec::encode_tpeg_hex(&loc).unwrap();
         let redecoded_tpeg = openlr_codec::decode_tpeg_hex(&tpeg).unwrap();
         assert!(redecoded_tpeg.is_point_on_line());
+    }
+
+    #[test]
+    fn pal_rejects_a_start_node_it_cannot_legally_depart_from() {
+        let mut g = Graph::new();
+        g.add_node(node(0, 0.0, 0.0));
+        g.add_node(node(1, 0.001, 0.0));
+        // One-way Forward: departable only from node 0, never from node 1.
+        g.add_segment(NetworkSegment {
+            id: SegmentId(1), start_node: NodeId(0), end_node: NodeId(1),
+            geometry: vec![(0.0, 0.0), (0.001, 0.0)], length_m: 111.0,
+            frc: 4, fow: 3, direction: Direction::Forward, stable_id: String::new(),
+        });
+
+        let input = PalLocationInput {
+            line: SegmentId(1),
+            start_node: NodeId(1), // the illegal end -- topologically valid, direction-wise not
+            point_offset_m: 40.0,
+            orientation: Orientation::NoOrientation,
+            side_of_road: SideOfRoad::DirectlyOnOrNA,
+        };
+        let err = encode_pal(&g, &input, 150.0, 15_000.0).unwrap_err();
+        assert!(matches!(err, EncodeError::IllegalDirection { index: 0, segment: SegmentId(1) }));
     }
 
     /// node 0 --60m-- node 1 (A, pass-through) --100m(core)-- node 2 (B,

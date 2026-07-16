@@ -62,8 +62,7 @@ pub fn encode_line(graph: &Graph, input: &LineLocationInput, max_turn_deviation_
     let first_seg_id = input.path[0];
     let last_seg_id = *input.path.last().unwrap();
 
-    let end_node = coverage::trace_end_node(graph, input.start_node, &input.path)
-        .ok_or(EncodeError::Disconnected { index: 0 })?;
+    let end_node = coverage::trace_end_node_validated(graph, input.start_node, &input.path)?;
 
     // Step 2: expand both ends outward to valid nodes (Rule-4), tracking the
     // segments walked so they can be spliced into the full path.

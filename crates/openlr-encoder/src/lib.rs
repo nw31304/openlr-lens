@@ -22,6 +22,14 @@ pub enum EncodeError {
     EmptyPath,
     #[error("path is not connected: segment {index} does not share a node with its predecessor")]
     Disconnected { index: usize },
+    /// Distinct from `Disconnected`: segment `segment` at path index `index`
+    /// *does* touch the node the walk arrived at, but can't actually be
+    /// departed from there — a one-way segment oriented the wrong way for
+    /// the direction this path requires. Unlike `Disconnected`, this can
+    /// only be caused by direction, never by topology alone — see
+    /// `Graph::outgoing_segments`'s doc comment and CLAUDE.md Invariant 10.
+    #[error("segment {segment:?} at path index {index} cannot be departed in the required direction")]
+    IllegalDirection { index: usize, segment: openlr_graph::SegmentId },
     #[error("no route exists between the requested points on this graph")]
     NoRoute,
     /// Distinct from `NoRoute`: a route *was* found (or the un-expanded core
