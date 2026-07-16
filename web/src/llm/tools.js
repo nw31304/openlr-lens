@@ -558,14 +558,15 @@ export const ENCODE_TOOL_DEFINITIONS = [
         'Replay Rule-4 boundary expansion from node_id outward along segment_id (the direction *away* from '
         + 'the location) — the same walk encode_line/encode_pal perform internally whenever a location\'s '
         + 'start or end node isn\'t a real junction. Reports how far it travelled and exactly why it stopped: '
-        + 'already valid, reached a valid node, ran off the loaded graph (dead end), hit max_leg_m, or was '
-        + 'blocked by a turn sharper than max_turn_deviation_deg. Use when a leg fails Rule-1 (too long) or '
-        + 'seems to anchor at an unexpected node.',
+        + 'already valid, reached a valid node, blocked by a one-way segment oriented the wrong way, ran off '
+        + 'the loaded graph (dead end), hit max_leg_m, or was blocked by a turn sharper than '
+        + 'max_turn_deviation_deg. Use when a leg fails Rule-1 (too long) or seems to anchor at an unexpected node.',
       parameters: {
         type: 'object',
         properties: {
           node_id:    { type: 'integer', description: 'Node to expand outward from (a location boundary).' },
           segment_id: { type: 'integer', description: 'Segment leading away from the location, in the expansion direction.' },
+          end_side:   { type: 'boolean', description: 'true if node_id is the location\'s end boundary, false if it\'s the start boundary — the two need opposite direction checks against one-way segments. Defaults to false (start).' },
           max_leg_m:  { type: 'number', description: 'Optional override of the Rule-1 cap. Defaults to the active max_leg_m.' },
           max_turn_deviation_deg: { type: 'number', description: 'Optional override of the turn-angle cap. Defaults to the active param.' },
         },
@@ -796,7 +797,8 @@ async function executeEncodeTool(name, args, { encoder, encodeResult, waypoints,
       if (!encoder) return JSON.stringify({ error: 'Encoder not available.' });
       const maxLeg  = args.max_leg_m ?? maxEncodeLegM ?? 15000;
       const maxTurn = args.max_turn_deviation_deg ?? params?.max_interior_turn_deviation_deg ?? 180;
-      const raw = encoder.check_boundary_expansion(args.node_id, args.segment_id, maxLeg, maxTurn);
+      const endSide = args.end_side ?? false;
+      const raw = encoder.check_boundary_expansion(args.node_id, args.segment_id, endSide, maxLeg, maxTurn);
       const data = JSON.parse(raw);
       const stoppedReason = typeof data.stopped === 'string' ? data.stopped : Object.keys(data.stopped ?? {})[0] ?? null;
       const stoppedDeviation = data.stopped?.SharpTurn?.deviation_deg;
@@ -804,6 +806,7 @@ async function executeEncodeTool(name, args, { encoder, encodeResult, waypoints,
         {
           node_id: args.node_id,
           segment_id: args.segment_id,
+          end_side: endSide,
           max_leg_m: maxLeg,
           max_turn_deviation_deg: maxTurn,
           stopped_at_node: data.node,

@@ -50,9 +50,9 @@ pub fn encode_pal(graph: &Graph, input: &PalLocationInput, max_turn_deviation_de
     // walks becomes part of the encoded value on the wire.
     let core_m = seg.length_m;
     let start_budget = (max_leg_m - core_m).max(0.0);
-    let start_exp = expansion::expand_to_valid_node(graph, input.start_node, input.line, start_budget, max_turn_deviation_deg);
+    let start_exp = expansion::expand_to_valid_node(graph, input.start_node, input.line, false, start_budget, max_turn_deviation_deg);
     let end_budget = (max_leg_m - core_m - start_exp.distance_m).max(0.0);
-    let end_exp = expansion::expand_to_valid_node(graph, end_node, input.line, end_budget, max_turn_deviation_deg);
+    let end_exp = expansion::expand_to_valid_node(graph, end_node, input.line, true, end_budget, max_turn_deviation_deg);
 
     let poff_m = input.point_offset_m + start_exp.distance_m;
 

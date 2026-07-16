@@ -27,6 +27,13 @@ pub enum ExpansionStopReason {
     /// function doc comment for why this stops the walk rather than being a
     /// gate with an alternative to fall back on.
     SharpTurn { deviation_deg: f64 },
+    /// The only other segment touching the current node exists in the raw
+    /// (direction-agnostic) topology, but can't actually be travelled in the
+    /// direction this expansion needs — see `expand_to_valid_node`'s
+    /// `end_side` parameter. Distinct from `DeadEnd` (no other segment at
+    /// all) so a caller can tell "no further road" from "a road, but the
+    /// wrong way down it" apart.
+    WrongDirection,
 }
 
 /// Result of walking outward from one end of a location to a valid node.
@@ -55,6 +62,15 @@ pub struct Expansion {
 /// the direction *not* to walk (that's the location's own interior). Each
 /// subsequent hop then skips whichever segment was just traversed.
 ///
+/// `end_side` says which way the assembled final path travels relative to
+/// this walk: `true` for end-side expansion, where the walked segments are
+/// appended as-is (the final path travels the same direction as the walk —
+/// `node` toward `next_node`); `false` for start-side expansion, where the
+/// walked segments are reversed before being prepended (the final path
+/// travels `next_node` toward `node`, the *opposite* of the walk direction).
+/// This determines which endpoint's permitted travel direction each
+/// candidate hop is checked against — see `next_hop`.
+///
 /// A pass-through node has, by construction, exactly one continuation — no
 /// alternative to choose between, so there's nothing for a turn-angle *gate*
 /// to protect against here (unlike A*/`sweep_coverage`, where the same check
@@ -72,6 +88,7 @@ pub fn expand_to_valid_node(
     graph: &Graph,
     start: NodeId,
     skip_seg: SegmentId,
+    end_side: bool,
     max_leg_m: f64,
     max_turn_deviation_deg: f64,
 ) -> Expansion {
@@ -89,8 +106,16 @@ pub fn expand_to_valid_node(
     let stopped;
 
     loop {
-        let Some((next_node, next_seg, seg_len)) = next_hop(graph, node, skip) else {
-            stopped = ExpansionStopReason::DeadEnd;
+        let hop = next_hop(graph, node, skip, end_side);
+        let Some((next_node, next_seg, seg_len)) = hop else {
+            // Distinguish "no other segment at all" from "a segment exists
+            // but can't be travelled the way this expansion needs" — see
+            // `next_hop`.
+            stopped = if graph.topology_neighbors(node).iter().any(|(_, s)| *s != skip) {
+                ExpansionStopReason::WrongDirection
+            } else {
+                ExpansionStopReason::DeadEnd
+            };
             break;
         };
         if distance_m + seg_len > max_leg_m {
@@ -116,13 +141,26 @@ pub fn expand_to_valid_node(
     Expansion { node, distance_m, segments, stopped }
 }
 
-/// The one segment touching `node` other than `skip`, if any. At an invalid
-/// node (a pass-through, per `Graph::is_valid_node`) there is by construction
-/// exactly one such neighbor to continue the walk into.
-fn next_hop(graph: &Graph, node: NodeId, skip: SegmentId) -> Option<(NodeId, SegmentId, f64)> {
+/// The one segment touching `node` other than `skip`, if any — filtered to
+/// one that can actually be *travelled* the direction this expansion needs.
+/// `Graph::is_valid_node`/`topology_neighbors` are direction-agnostic (real
+/// topology, ignoring one-way restrictions), so a pass-through node's "one
+/// other continuation" can be a one-way segment oriented the wrong way for
+/// this walk — exactly the bug class fixed in `snap_point` (see
+/// `Graph::outgoing_segments`'s doc comment). End-side expansion (`end_side`)
+/// needs the segment departable from `node` itself (the final path travels
+/// the same direction as the walk); start-side expansion needs it departable
+/// from the *other* node (the final path travels the walk in reverse — see
+/// `expand_to_valid_node`'s doc comment).
+fn next_hop(graph: &Graph, node: NodeId, skip: SegmentId, end_side: bool) -> Option<(NodeId, SegmentId, f64)> {
     graph.topology_neighbors(node)
         .iter()
-        .find(|(_, seg)| *seg != skip)
+        .find(|(other_node, seg)| {
+            *seg != skip && {
+                let departable_from = if end_side { node } else { *other_node };
+                graph.outgoing_segments(departable_from).contains(seg)
+            }
+        })
         .and_then(|(other_node, seg_id)| {
             graph.segments.get(seg_id).map(|seg| (*other_node, *seg_id, seg.length_m))
         })
@@ -153,7 +191,7 @@ mod tests {
         g.add_segment(seg(1, 0, 1, 100.0));
         g.add_segment(seg(2, 1, 2, 100.0));
         g.add_segment(seg(3, 1, 3, 100.0));
-        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), 15_000.0, 180.0);
+        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), true, 15_000.0, 180.0);
         assert_eq!(exp.node, NodeId(1));
         assert_eq!(exp.distance_m, 0.0);
     }
@@ -168,7 +206,7 @@ mod tests {
         g.add_segment(seg(2, 1, 2, 50.0));
         g.add_segment(seg(3, 2, 3, 100.0));
         g.add_segment(seg(4, 2, 4, 100.0)); // makes node 2 a real 3-way branch
-        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), 15_000.0, 180.0);
+        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), true, 15_000.0, 180.0);
         assert_eq!(exp.node, NodeId(2));
         assert!((exp.distance_m - 50.0).abs() < 1e-9);
     }
@@ -180,7 +218,7 @@ mod tests {
         let mut g = Graph::new();
         g.add_segment(seg(1, 0, 1, 100.0));
         g.add_segment(seg(2, 1, 2, 50.0));
-        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), 15_000.0, 180.0);
+        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), true, 15_000.0, 180.0);
         assert_eq!(exp.node, NodeId(2));
         assert!((exp.distance_m - 50.0).abs() < 1e-9);
     }
@@ -192,7 +230,7 @@ mod tests {
         g.add_segment(seg(2, 1, 2, 50.0));
         g.add_segment(seg(3, 2, 3, 100.0));
         g.add_segment(seg(4, 2, 4, 100.0)); // node 2 would be valid, but out of budget
-        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), 10.0, 180.0); // cap way below 50m
+        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), true, 10.0, 180.0); // cap way below 50m
         assert_eq!(exp.node, NodeId(1), "should stay put rather than exceed the cap");
         assert_eq!(exp.distance_m, 0.0);
     }
@@ -218,13 +256,102 @@ mod tests {
         g.add_segment(seg(3, 2, 3, 100.0)); // makes node 2 a real 3-way branch
         g.add_segment(seg(4, 2, 4, 100.0));
 
-        let permissive = expand_to_valid_node(&g, NodeId(1), SegmentId(1), 15_000.0, 180.0);
+        let permissive = expand_to_valid_node(&g, NodeId(1), SegmentId(1), true, 15_000.0, 180.0);
         assert_eq!(permissive.node, NodeId(2), "an unrestricted cap should walk through to the valid node");
         assert!((permissive.distance_m - 50.0).abs() < 1e-9);
 
-        let strict = expand_to_valid_node(&g, NodeId(1), SegmentId(1), 15_000.0, 150.0);
+        let strict = expand_to_valid_node(&g, NodeId(1), SegmentId(1), true, 15_000.0, 150.0);
         assert_eq!(strict.node, NodeId(1), "a 150° cap should refuse the 180° reversal and stay put");
         assert_eq!(strict.distance_m, 0.0);
         assert!(strict.segments.is_empty());
+    }
+
+    #[test]
+    fn end_side_rejects_wrong_direction_one_way_continuation() {
+        // Node 1 is a pass-through node (2 distinct neighbors: 0 via the
+        // skip segment, 2 via seg 2) but seg 2 is one-way and can only be
+        // departed from node 2, not node 1. End-side expansion (end_side =
+        // true) needs to depart *from* node 1 in the walk direction, so it
+        // must refuse this continuation rather than silently walking onto a
+        // segment the final path couldn't actually traverse.
+        let mut g = Graph::new();
+        g.add_segment(seg(1, 0, 1, 100.0));
+        g.add_segment(NetworkSegment {
+            id: SegmentId(2), start_node: NodeId(1), end_node: NodeId(2),
+            geometry: vec![(0.001, 0.0), (0.002, 0.0)], length_m: 50.0,
+            frc: 3, fow: 3, direction: Direction::Backward, stable_id: String::new(),
+        });
+        g.add_segment(seg(3, 2, 3, 100.0));
+        g.add_segment(seg(4, 2, 4, 100.0)); // node 2 a real 3-way branch (moot — must be unreachable)
+
+        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), true, 15_000.0, 180.0);
+        assert_eq!(exp.node, NodeId(1), "must not walk onto a segment it can't depart from node 1");
+        assert_eq!(exp.distance_m, 0.0);
+        assert!(exp.segments.is_empty());
+        assert_eq!(exp.stopped, ExpansionStopReason::WrongDirection);
+    }
+
+    #[test]
+    fn end_side_walks_correctly_directioned_one_way_continuation() {
+        // Same shape as above, but seg 2 is departable from node 1 (its
+        // start_node) — the fix must not reject a continuation just because
+        // it's one-way, only one oriented the wrong way.
+        let mut g = Graph::new();
+        g.add_segment(seg(1, 0, 1, 100.0));
+        g.add_segment(NetworkSegment {
+            id: SegmentId(2), start_node: NodeId(1), end_node: NodeId(2),
+            geometry: vec![(0.001, 0.0), (0.002, 0.0)], length_m: 50.0,
+            frc: 3, fow: 3, direction: Direction::Forward, stable_id: String::new(),
+        });
+        g.add_segment(seg(3, 2, 3, 100.0));
+        g.add_segment(seg(4, 2, 4, 100.0));
+
+        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), true, 15_000.0, 180.0);
+        assert_eq!(exp.node, NodeId(2));
+        assert!((exp.distance_m - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn start_side_rejects_wrong_direction_one_way_continuation() {
+        // Start-side expansion (end_side = false) walks node 1 -> node 2,
+        // but the *final* assembled path travels node 2 -> node 1 (these
+        // segments get reversed before being prepended). seg 2 is one-way
+        // Forward (departable only from its start_node, node 1) — fine for
+        // the walk itself, but the final path needs to depart from node 2,
+        // which this segment doesn't allow. Must be rejected.
+        let mut g = Graph::new();
+        g.add_segment(seg(1, 1, 0, 100.0)); // skip_seg: location's own core
+        g.add_segment(NetworkSegment {
+            id: SegmentId(2), start_node: NodeId(1), end_node: NodeId(2),
+            geometry: vec![(0.001, 0.0), (0.002, 0.0)], length_m: 50.0,
+            frc: 3, fow: 3, direction: Direction::Forward, stable_id: String::new(),
+        });
+        g.add_segment(seg(3, 2, 3, 100.0));
+        g.add_segment(seg(4, 2, 4, 100.0));
+
+        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), false, 15_000.0, 180.0);
+        assert_eq!(exp.node, NodeId(1), "final path travels node2->node1, which this segment can't support");
+        assert_eq!(exp.distance_m, 0.0);
+        assert_eq!(exp.stopped, ExpansionStopReason::WrongDirection);
+    }
+
+    #[test]
+    fn start_side_walks_correctly_directioned_one_way_continuation() {
+        // Same shape, but seg 2 is departable from node 2 (its start_node)
+        // toward node 1 — exactly the direction the reversed final path
+        // needs.
+        let mut g = Graph::new();
+        g.add_segment(seg(1, 1, 0, 100.0));
+        g.add_segment(NetworkSegment {
+            id: SegmentId(2), start_node: NodeId(2), end_node: NodeId(1),
+            geometry: vec![(0.002, 0.0), (0.001, 0.0)], length_m: 50.0,
+            frc: 3, fow: 3, direction: Direction::Forward, stable_id: String::new(),
+        });
+        g.add_segment(seg(3, 2, 3, 100.0));
+        g.add_segment(seg(4, 2, 4, 100.0));
+
+        let exp = expand_to_valid_node(&g, NodeId(1), SegmentId(1), false, 15_000.0, 180.0);
+        assert_eq!(exp.node, NodeId(2));
+        assert!((exp.distance_m - 50.0).abs() < 1e-9);
     }
 }

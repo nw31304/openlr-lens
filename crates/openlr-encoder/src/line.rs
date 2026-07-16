@@ -89,14 +89,14 @@ pub fn encode_line(graph: &Graph, input: &LineLocationInput, max_turn_deviation_
     let last_leg_core_m = segs_len_m(&input.path[last_leg_core_start..]);
 
     let start_budget = (max_leg_m - first_leg_core_m).max(0.0);
-    let start_exp = expansion::expand_to_valid_node(graph, input.start_node, first_seg_id, start_budget, max_turn_deviation_deg);
+    let start_exp = expansion::expand_to_valid_node(graph, input.start_node, first_seg_id, false, start_budget, max_turn_deviation_deg);
     let end_budget = if input.via_split_points.is_empty() {
         // Same leg as the start boundary — only what start didn't use is left.
         (max_leg_m - last_leg_core_m - start_exp.distance_m).max(0.0)
     } else {
         (max_leg_m - last_leg_core_m).max(0.0)
     };
-    let end_exp = expansion::expand_to_valid_node(graph, end_node, last_seg_id, end_budget, max_turn_deviation_deg);
+    let end_exp = expansion::expand_to_valid_node(graph, end_node, last_seg_id, true, end_budget, max_turn_deviation_deg);
 
     let mut full_path = Vec::with_capacity(start_exp.segments.len() + input.path.len() + end_exp.segments.len());
     full_path.extend(start_exp.segments.iter().rev().copied());

@@ -2028,16 +2028,19 @@ impl Encoder {
     /// internally when a location's start or end node is invalid (a
     /// pass-through, not a real junction or dead end). Use to see how far
     /// expansion actually travelled and why it stopped: already valid,
-    /// reached a valid node, ran off the edge of the loaded graph, hit
-    /// `max_leg_m`, or was blocked by a turn sharper than
-    /// `max_turn_deviation_deg`.
+    /// reached a valid node, blocked by a one-way segment oriented the wrong
+    /// way, ran off the edge of the loaded graph, hit `max_leg_m`, or was
+    /// blocked by a turn sharper than `max_turn_deviation_deg`.
     ///
     /// `segment_id` must be the segment leading *away* from the location
     /// (the direction expansion walks), matching `expand_to_valid_node`'s
-    /// `skip_seg` parameter.
-    pub fn check_boundary_expansion(&self, node_id: u32, segment_id: u32, max_leg_m: f64, max_turn_deviation_deg: f64) -> String {
+    /// `skip_seg` parameter. `end_side` says which boundary this is: `true`
+    /// for a location's end node, `false` for its start node — see
+    /// `expand_to_valid_node`'s doc comment for why the two need opposite
+    /// direction checks.
+    pub fn check_boundary_expansion(&self, node_id: u32, segment_id: u32, end_side: bool, max_leg_m: f64, max_turn_deviation_deg: f64) -> String {
         let exp = openlr_encoder::expansion::expand_to_valid_node(
-            &self.loader.graph, NodeId(node_id), SegmentId(segment_id), max_leg_m, max_turn_deviation_deg,
+            &self.loader.graph, NodeId(node_id), SegmentId(segment_id), end_side, max_leg_m, max_turn_deviation_deg,
         );
         serde_json::json!({
             "node": exp.node.0,
