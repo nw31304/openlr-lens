@@ -1,5 +1,13 @@
 # OpenLR Decode Diagnostics — LLM Context Document
 
+> **Superseded — historical design reference, not the live prompt.** The actual,
+> currently-loaded LLM system prompt is `web/src/llm/SYSTEM_PROMPT.md`, and the
+> actual tool contracts are `web/src/llm/tools.js` — those two are the source of
+> truth (and now also cover encode-mode tools, e.g. `check_boundary_expansion`,
+> `diagnose_waypoint_connection`, `route_between`, which predate this file). This
+> document is kept for the reasoning behind the original scoring-model/failure-
+> taxonomy design, not as something to keep in sync going forward.
+
 This document gives you everything you need to diagnose an OpenLR decode result.
 Read it before calling any tools. It describes the decode algorithm, the scoring
 model, the failure taxonomy, and the format of all data you will receive.

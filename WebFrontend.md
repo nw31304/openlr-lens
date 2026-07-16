@@ -1,8 +1,10 @@
 # OpenLRLens — Web Frontend
 
 This document describes the web frontend: its architecture, component tree, state
-management, WASM decode protocol, MapLibre layer model, and the tile geometry caching
-pattern. It is the canonical reference for resuming frontend work after a context gap.
+management, WASM decode/encode protocol, MapLibre layer model, and the tile geometry
+caching pattern. It is the canonical reference for resuming frontend work after a
+context gap. §1–19 cover the original decode-only app; §20 covers encode mode, added
+later — read §20 alongside §3/§5 (state and Map.jsx), not as a standalone add-on.
 
 ---
 
@@ -10,16 +12,24 @@ pattern. It is the canonical reference for resuming frontend work after a contex
 
 The frontend is a **Vite + React SPA** that runs entirely client-side. There is no
 backend server — the map data comes from range-read HTTP requests against a PMTiles
-archive, and decoding runs inside a WASM module compiled from the Rust engine.
+archive, and decoding/encoding both run inside a WASM module compiled from the Rust
+core (`Decoder` and `Encoder` structs — see §4 and §20).
 
 ```
 Browser
-  App.jsx         — startup, WASM init, tile base URL from ?tiles= param
-    TopBar.jsx    — OpenLR string input, preset, toggles, Decode button
+  App.jsx           — startup, WASM init, tile base URL from ?tiles= param
+    MenuBar.jsx     — decode/encode mode toggle, location-type dropdown, panel toggles
+    TopBar.jsx      — OpenLR string input, preset, toggles, Decode button (decode mode)
     ParamsPanel.jsx — all DecodeParams fields; FRC/FOW penalty tables
-    MapView.jsx   — MapLibre GL JS canvas; 6 custom GeoJSON sources/layers
-    ResultPanel.jsx — decoded segment list; click-to-highlight
-    TracePanel.jsx  — full decode trace: candidates, A*, DNP, offsets, result
+    Map.jsx         — MapLibre GL JS canvas; GeoJSON sources/layers for both modes
+    ResultPanel.jsx — decoded segment list; click-to-highlight (decode mode)
+    EncodeResultPanel.jsx — v3/TPEG output, verify-decode glance badge (encode mode)
+    TracePanel.jsx  — full trace: candidates, A*, DNP, offsets, result (both modes —
+                      reads decodeResult or verifyResult depending on mode)
+    ReplayPanel.jsx — step-by-step A* replay (both modes)
+    BottomBar.jsx   — status line
+    LlmChatPanel.jsx / LlmSettingsPanel.jsx — AI assistant, both modes
+    DecodeToast.jsx — transient result/error banner
 ```
 
 Development entry: `web/` directory, `npm run dev` (Vite dev server on :5173, tile
@@ -42,7 +52,9 @@ server on :5176 with HTTP 206 range support).
 
 ## 3. State management (`store.js`)
 
-Uses **Zustand**. All shared UI state lives here.
+Uses **Zustand**. All shared UI state lives here. The fields below are decode-side;
+encode-side fields (`mode`, `waypoints`, `liveRoute`, `encodeResult`, `verifyResult`, …)
+are listed in §20.2.
 
 ### Store fields
 
@@ -541,23 +553,31 @@ This avoids the O(N²) cost of recomputing from step 0 on every step during forw
 | `src/main.jsx` | React root mount; `<StrictMode>` wrapper |
 | `src/App.jsx` | Startup, WASM init, tile base URL, component tree |
 | `src/App.css` | All styles (TopBar, panels, map overlays, trace panel, replay panel, LLM chat) |
-| `src/store.js` | Zustand store; 3 module-level caches; `runDecode()`; PRESETS; replay + LLM state |
+| `src/store.js` | Zustand store; 3 module-level caches; `runDecode()`; PRESETS; replay + LLM + encode state (§20) |
 | `src/replayEngine.js` | `buildReplaySteps`, `applyStep`, `emptyState`, `computeVisualState`, `stateToGeoJSON(state, geomLookup)`, `verdictType` |
 | `src/tileDecoder.js` | OLRL v2 binary → GeoJSON |
-| `src/wasm.js` | WASM module loader (`initWasm()`) |
+| `src/wasm.js` | WASM module loader (`initWasm()`), exposes both the `Decoder` and `Encoder` classes |
 | `src/hooks.js` | `useDraggable` |
 | `src/diagnosis.js` | `diagnoseFailure`, `diagnoseSuccess` — rule-based decode diagnosis from trace events |
+| `src/utils.js` | Small shared helpers |
 | `src/llmClient.js` | `chatComplete(config, messages)` — OpenAI-compatible HTTP client |
-| `src/llmDiagnosis.js` | `buildSystemContext(decodeResult, params)` — system prompt from decode state |
+| `src/llmDiagnosis.js` | `buildSystemContext`/`buildDiagnosticPrompt` (decode) and `buildEncodeDiagnosticPrompt` (encode) — system prompt assembly from current state |
 | `src/renderLlmText.jsx` | Lightweight LLM markdown renderer (bold, code, lists) |
-| `src/llm/SYSTEM_PROMPT.md` | System prompt template for LLM chat sessions |
+| `src/llm/SYSTEM_PROMPT.md` | System prompt template for LLM chat sessions (imported via Vite `?raw`, no build step — see `src/llm/README.md`) |
+| `src/llm/tools.js` | LLM function-calling tool schemas + handlers, decode and encode side |
 | `src/llm/README.md` | LLM integration documentation |
-| `src/components/Map.jsx` | MapLibre GL JS; all sources/layers; tile loader; highlight + replay + candidatePopup effects |
+| `src/components/Map.jsx` | MapLibre GL JS; all sources/layers for both decode and encode mode; tile loader; highlight + replay + candidatePopup effects; waypoint snap-picker popup (§20) |
+| `src/components/MenuBar.jsx` | Decode/encode mode toggle; location-type dropdown (encode); panel visibility toggles |
 | `src/components/TopBar.jsx` | Input bar, gear menu, Trace level, ▶ Replay button, Decode button |
 | `src/components/ParamsPanel.jsx` | DecodeParams editor; FRC/FOW penalty tables; `SpinInput` with optional max |
 | `src/components/ResultPanel.jsx` | Decoded segment list; click-to-highlight; failure diagnosis; LLM chat button |
-| `src/components/TracePanel.jsx` | Full decode trace; `SegBtn`; `buildCandPopup`; `RejectedTable`; candidate evaluation popup |
+| `src/components/EncodeResultPanel.jsx` | v3/TPEG output + copy buttons; verify-decode glance badge (§20) |
+| `src/components/TracePanel.jsx` | Full trace; `SegBtn`; `buildCandPopup`; `RejectedTable`; candidate evaluation popup; forced-decode pin/re-run UI; reads `decodeResult` or `verifyResult` depending on `mode` |
 | `src/components/ReplayPanel.jsx` | Step replay UI: ◀/▶ buttons, step counter, scrubable timeline |
+| `src/components/BottomBar.jsx` | Status line |
+| `src/components/DecodeToast.jsx` | Transient result/error banner |
+| `src/components/LlmChatPanel.jsx` | AI chat panel (draggable modal) |
+| `src/components/LlmSettingsPanel.jsx` | LLM provider/key/model config (draggable modal) |
 | `vite.config.js` | Dev server; serve-tiles plugin (HTTP 206 / range support) |
 
 ---
@@ -655,3 +675,132 @@ Both functions read from the trace events embedded in `decodeResult.trace` to pr
   segment geometry cache as the trace highlight. If a route segment ID is not in either
   cache (e.g. the tile was not loaded), that segment is silently omitted from the gold
   route line. The route will still show partially in most cases.
+
+---
+
+## 20. Encode mode
+
+Draw waypoints on the map for a Line or PointAlongLine location, get a live routed
+preview as you go, and encode to both binary v3 and TPEG-OLR — immediately
+round-trip-verified by decoding the result straight back through the ordinary
+`Decoder`. Toggled via `MenuBar.jsx`'s mode switch (`store.mode`); only **Line** and
+**PointAlongLine** are implemented (§20.1) — the other 7 OpenLR location types are
+listed in the location-type dropdown but disabled.
+
+### 20.1 Waypoint editing gesture (`Map.jsx`)
+
+Encode mode dedicates the **right mouse button** entirely to waypoint editing — left
+click/drag stays ordinary map panning. (`dragRotate` is disabled and the native
+context menu suppressed specifically to free the right button up for this; see the
+comment block above `onEncodeMouseDown`.) `mousedown` hit-tests, in priority order:
+
+1. **An existing waypoint marker** — starts a *move* drag (the marker's own listener
+   calls `startEncodeDragRef.current('move', index, e)`).
+2. **The live route line** (`encode-route-line`/`encode-route-casing`, small pixel
+   buffer) — starts an *insert* drag, splitting that leg at a new via-point.
+3. **Empty map** — starts an *add* drag (append; for PointAlongLine, replaces the
+   single existing point instead, since there's only ever one).
+
+Dragging is optional — a right-click with zero movement and a right-click-drag both
+end the same way: `mouseup` always opens the snap-candidate popup at the release
+point (§20.3), never commits directly. While dragging, a ghost line
+(`updateEncodeGhost`, source `encode-ghost`) redraws live from the fixed neighbor
+waypoint(s) to the cursor; `Escape` cancels (`onEncodeDragKeyDown`) without opening
+the popup. This gesture model is a deliberate design choice, not an accident: pairing
+"where do I click" with "which edit happens" would make append/insert/move
+ambiguous near the route line, so priority-ordered hit-testing plus a single
+button resolves it structurally instead of guessing intent.
+
+### 20.2 Store fields and actions (`store.js`)
+
+| Field | Type | Description |
+|---|---|---|
+| `mode` | 'decode' \| 'encode' | Active top-level mode |
+| `locationType` | 'Line' \| 'PointAlongLine' \| … | Encode location type (only these two work) |
+| `palOrientation`, `palSideOfRoad` | string | PointAlongLine-only encode options; read/write from both the map popup and `EncodeResultPanel` |
+| `maxEncodeLegM` | number | Rule-1 cap override, meters; encoder-only, clamped server-side to 15 km |
+| `waypoints` | `{lon,lat}[]` | Ordered, user-drawn |
+| `waypointHistory` | `waypoints[][]` | Undo stack — prior snapshots pushed before each edit |
+| `liveRoute` | `{segments, geometry, length_m}` \| null | From `Encoder.route_between()` |
+| `liveRouteError`, `liveRouteLoading` | | Live-preview routing state |
+| `encoding` | bool | Encode in flight |
+| `encodeResult` | `{v3, tpeg, error}` \| null | Last encode output |
+| `verifyResult` | object \| null | The freshly-encoded reference decoded straight back through the same `_decoder` — same shape as `decodeResult`, so Results/Trace/Replay read this instead when `mode === 'encode'` |
+| `verifyToast`, `verifyReplaySteps`, `verifyReplayStats`, `verifyReplayStep` | | Encode-side mirrors of the decode replay/toast state |
+| `showResult` | bool | Results-panel-family visibility, shared across both modes |
+
+Key actions: `setMode`, `setLocationType`, `addWaypoint`/`insertWaypoint`/
+`moveWaypoint`/`removeWaypoint`/`moveWaypointIndex` (each pushes onto
+`waypointHistory` first, then calls `runLiveRoute`), `undo`, `clearWaypoints`
+(also resets `showResult` to `false` — Clear closes the Results panel along with
+wiping the map), `runLiveRoute` (debounced `route_between` call, `needs_tile`
+handled the same way `runDecode` handles it), `runEncode`/`runEncodePal` (calls
+`encode_line`/`encode_pal`, then `runVerifyDecode` on the result — fire-and-forget,
+not awaited by callers, since the panel reads the in-flight state reactively),
+`runVerifyDecode`, `openResult`/`hideResult`/`toggleResult`.
+
+`previewRouteBetween(waypointsList, maxTurnDeviationDeg)` is a separate, exported,
+**stateless** function mirroring `runLiveRoute`'s core call but touching no store
+state — used so clicking through multiple snap candidates in the popup (§20.3) to
+compare routes doesn't pollute `waypointHistory` the way repeated real
+`insertWaypoint`/`moveWaypoint` calls would.
+
+### 20.3 Waypoint snap-candidate popup
+
+Opened by `showWaypointPopup(lon, lat, kind, index)` on every `mouseup` from §20.1
+(`kind` is `'add' | 'insert' | 'move'`). Queries nearby segments/nodes and lists them
+as clickable candidate rows in a MapLibre `Popup`:
+
+- **Click-only selection** — hovering a row does nothing; only a click updates the
+  active candidate, its highlight, and (via `previewRouteBetween`) the live route
+  preview. This is deliberate: a cheap hover-preview was tried and rejected because
+  it changed the selection without the user asking it to.
+- **Distinct click-point marker** — the actual coordinate the user right-clicked is
+  rendered on a separate source/layer (`encode-click-point`, bright pink-red circle)
+  from the candidate snap points (blue/grey), so the two are never visually confused.
+- **Draggable popup** — the popup title doubles as a drag handle
+  (`.snap-picker-drag-handle`); dragging calls `popup.setOffset([x, y])` (tracked in a
+  local `currentOffset`, not read back from the popup — `Popup` has no `getOffset()`,
+  only `Marker` does) so the user can move the popup out of the way of the geometry
+  it's showing, rather than the app trying to out-guess placement heuristically. An
+  anchor is still computed on open (averaging the direction to neighbor waypoints and
+  candidates, with a viewport-fit check before forcing it) as a reasonable starting
+  position, but dragging is the actual fix for occlusion, not the anchor heuristic.
+- **"Last waypoint" checkbox** (Line only) — disabled for a location's first waypoint
+  (nothing to draw yet). Checking it and pressing Enter (or clicking it directly)
+  calls `commitCandidate`, which commits the point *and* — if this was the last Line
+  waypoint, or always for PointAlongLine (implicitly "last") — immediately opens the
+  Results panel and fires `runEncode`/`runEncodePal`, so confirming the final point is
+  the one action that finishes the whole flow.
+
+### 20.4 `EncodeResultPanel.jsx`
+
+Shows the last `encodeResult` (v3 base64 / TPEG hex, each with a copy button) and a
+compact glance badge derived from `verifyResult` (✓ round-tripped cleanly / ⚠ verify
+mismatch or failure). Full drill-down uses the **same** `ResultPanel`/`TracePanel`/
+`ReplayPanel` components decode mode uses — they simply read `verifyResult` instead
+of `decodeResult` while `mode === 'encode'` (see §20.2), so there is no separate
+encode-side trace UI to maintain.
+
+### 20.5 WASM `Encoder` bindings (`crates/openlr-wasm/src/lib.rs`)
+
+A separate class from `Decoder`, mirroring its tile lifecycle (`new`, `load_tile`,
+`reset_tiles`, `tiles_near_point`): `route_between(waypoints_json, max_turn_deviation_deg, zoom)`
+(Layer-1 preview routing — snap + chain A* between waypoints, `needs_tile` retry
+contract like `Decoder::decode`), `candidates_near_point(lon, lat)` (feeds §20.3's
+popup), `encode_line(...)`/`encode_pal(...)` (calls into `openlr-encoder`, then
+`openlr-codec`'s v3/TPEG serializers), plus the diagnostic bindings
+`diagnose_connection`/`check_boundary_expansion`/`get_turn_deviation` also exposed as
+LLM chat tools (`src/llm/tools.js`) — see `CLAUDE.md` §11 for what each does
+internally and §10/Invariant 10 for why `check_boundary_expansion` takes an
+`end_side` parameter.
+
+### 20.6 A bug class worth knowing before touching snapping/expansion code
+
+Three separate bugs this feature shipped with (two in `snap_point`, one in Rule-4
+boundary expansion) were the same root cause: using `Graph::topology_neighbors()`
+(direction-agnostic — real-world topology, ignoring one-way restrictions) to pick an
+anchor/travel-direction somewhere with no subsequent A*/routing step to catch a
+wrong-direction pick. `Graph::outgoing_segments()` is the direction-aware
+alternative. See `CLAUDE.md` Invariant 10 before adding new anchor-selection logic
+anywhere in the encode path.

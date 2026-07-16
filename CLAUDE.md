@@ -1,10 +1,11 @@
 # CLAUDE.md — OpenLRLens
 
-Browser-based WebAssembly OpenLR **diagnostic decoder** with global coverage. Rust core → WASM
-does codec + graph + A* entirely client-side; JS/MapLibre front end renders diagnostics. Map data
-is preprocessed once per source-data release into a static PMTiles archive (R2/CDN); no live server
-queries at runtime. Two decode formats: **OpenLR binary v3** (TomTom; 11.25° bearing buckets,
-~58.6 m DNP buckets) and **TPEG-OLR / ISO 21219-22** (full precision). Encoder is stubbed.
+Browser-based WebAssembly OpenLR **diagnostic decoder and encoder** with global coverage. Rust core
+→ WASM does codec + graph + A* + encoder entirely client-side; JS/MapLibre front end renders
+diagnostics and a waypoint-driven encode UI. Map data is preprocessed once per source-data release
+into a static PMTiles archive (R2/CDN); no live server queries at runtime. Two formats, both
+decode and encode: **OpenLR binary v3** (TomTom; 11.25° bearing buckets, ~58.6 m DNP buckets) and
+**TPEG-OLR / ISO 21219-22** (full precision).
 
 **Read §2 before writing any code — several invariants fail silently (wrong output, not a crash).**
 
@@ -52,6 +53,19 @@ queries at runtime. Two decode formats: **OpenLR binary v3** (TomTom; 11.25° be
    In v1 every tile carries all FRCs so this is automatic; it becomes a live constraint if FRC
    stratification is added.
 
+10. **Never pick an anchor/direction with `Graph::topology_neighbors()` if nothing downstream
+    re-validates it.** `topology_neighbors` (and `Graph::is_valid_node`, built on it) is
+    deliberately direction-agnostic — real-world topology, ignoring one-way restrictions — and
+    that's correct for structural questions like "is this a real junction". But encoding's
+    `snap_point` (node/segment-hint anchoring) and Rule-4 `expand_to_valid_node` boundary
+    expansion each anchor a *travel direction* with no A*/routing step afterward to catch a
+    wrong-direction pick (unlike interior A* routing, which would simply fail to find a path).
+    Use `Graph::outgoing_segments()` there instead — this exact bug (silently encoding a
+    reference that requires travel against a one-way segment) was found and fixed three separate
+    times in one session: twice in `snap_point`, once in `expand_to_valid_node`. If you're
+    choosing a segment/direction at a boundary with no subsequent validator, this is almost
+    certainly the wrong helper.
+
 ---
 
 ## 3. Architecture
@@ -75,7 +89,8 @@ All map access goes through `OpenLRDataProvider`. Primary implementation: `Pmtil
 engine needs a tile it yields a tile-key request to JS; JS fetches and resumes with bytes
 injected. This keeps the Rust provider synchronous and avoids async-trait across FFI.
 
-Crates: `openlr-codec`, `openlr-graph`, `openlr-engine`, `openlr-provider`, `openlr-wasm`.
+Crates: `openlr-codec`, `openlr-graph`, `openlr-engine` (decode), `openlr-encoder` (encode),
+`openlr-provider`, `openlr-wasm`.
 Web frontend: `web/` (Vite + React + MapLibre GL JS).
 
 The PMTiles builder lives in a separate repo,
@@ -192,7 +207,8 @@ pub struct Lrp {
 ```
 
 v3 fills intervals with quantization buckets; TPEG sets `LB == UB`. All engine code is
-format-agnostic past this model. Encoder is stubbed behind `OpenLrEncoder` trait.
+format-agnostic past this model. `openlr-codec` serializes the same `Lrp` model back to v3
+base64 and TPEG-OLR hex for the encoder (§11) — no separate encode-side codec.
 
 ---
 
@@ -241,16 +257,54 @@ Hard tolerances and soft penalties must stay distinct types. A decode is
    A* frontier animation; badge where path breaks.
 2. **Interval visualization:** bearing wedge (wide v3 / narrow TPEG), DNP band, τ/δ halos.
 3. **Desired-vs-actual explanation:**
-   - Run user's desired path through the same feasibility + cost functions (forced-decode mode).
-   - Diff against chosen path at divergence node.
-   - Classify: **infeasible** (direction / turn restriction / LFRCNP / DNP / not generated /
-     search limit) or **feasible-but-outscored** (attribute margin per term, per LRP).
-   - **Root-cause verdict:** decoder-tunable vs. encoder-deficient.
-     - Hard gates are monotonic → minimal required tolerances computed in closed form (no search).
-     - Soft-ranking flip is a linear program over the weight box (cost is additive, Invariant 7).
-     - Verdict is *tunable* only if some tolerance + weight vector makes the desired path the
-       strict unique winner; otherwise *encoder-deficient* with proof.
-     - Competitor set changes at breakpoints as gates loosen — check LP at each breakpoint.
+   - Forced-decode mode is **implemented**: pin a candidate per LRP in the TracePanel (or via the
+     LLM chat's `retry_leg` tool) and re-run A* against just those pins, to test directly whether
+     a desired path is feasible and see its score table next to the winning path's.
+   - The rest of this item is **not implemented** — still the target design, not current
+     behavior:
+     - Automatically diff against the chosen path at its divergence node.
+     - Classify: **infeasible** (direction / turn restriction / LFRCNP / DNP / not generated /
+       search limit) or **feasible-but-outscored** (attribute margin per term, per LRP).
+     - **Root-cause verdict:** decoder-tunable vs. encoder-deficient.
+       - Hard gates are monotonic → minimal required tolerances computed in closed form (no search).
+       - Soft-ranking flip is a linear program over the weight box (cost is additive, Invariant 7).
+       - Verdict is *tunable* only if some tolerance + weight vector makes the desired path the
+         strict unique winner; otherwise *encoder-deficient* with proof.
+       - Competitor set changes at breakpoints as gates loosen — check LP at each breakpoint.
+     - Today the closest substitute is the LLM chat reasoning manually over the trace
+       (see `WebFrontend.md`).
+
+---
+
+## 11. Encoder
+
+`openlr-encoder` builds a `LocationReference` from a caller-supplied path through the graph —
+Line and PointAlongLine only (7 other location types are UI-listed but not implemented). Reuses
+`openlr-graph`/`openlr-codec` directly; no new codec, no wasm-specific logic (all of it is plain,
+portable Rust — see §14 note below).
+
+- **Line** (`line.rs`): input is an ordered path of segments plus start/end within-segment
+  offsets. Rule-1 (`max_leg_m`) splits into via-point legs if any leg would otherwise exceed the
+  cap; Rule-4 (`expansion.rs`) walks each boundary outward to the nearest valid node (real
+  junction or dead end) if it isn't already one, composing `final_offset = original_offset +
+  expansion_distance` per the whitepaper's Figure 27. `coverage.rs` re-verifies the assembled path
+  with a real A*-equivalent turn-angle sweep afterward — expansion's own turn-angle stop condition
+  is a heuristic escape hatch, not a substitute for this.
+- **PointAlongLine** (`pal.rs`): input is one segment + an along-segment offset + orientation +
+  side-of-road. No coverage-sweep step — the segment itself *is* the path, verbatim. This is
+  exactly why Invariant 10 matters most here: there is nothing downstream to catch a
+  wrong-direction anchor the way Line's coverage sweep or interior A* would.
+- **Waypoint snapping** (`crates/openlr-wasm/src/lib.rs`: `snap_point`, `route_waypoints`,
+  `boundary_candidates`): turns a raw map click into a graph anchor (node or mid-segment point)
+  and chains legs between waypoints via the same A* the decoder's interior routing uses. This is
+  real encoding logic, not UI glue — see §14 for why its current location matters.
+- **Round-trip verification**: every encode in the UI immediately decodes its own output (both
+  v3 and TPEG) through the ordinary decoder — this *is* a real decode, so it drives the same
+  Segments/Trace/Replay panels the decode side already has, unmodified.
+- **Diagnostics** (`diagnose.rs`): `diagnose_connection` distinguishes genuine disconnection from
+  being blocked specifically by the turn-angle gate; `check_boundary_expansion` replays Rule-4
+  expansion in isolation. Both are exposed as LLM chat tools (`web/src/llm/tools.js`,
+  `SYSTEM_PROMPT.md`) for the same reason the decode side's trace-drilldown tools are.
 
 ---
 
@@ -261,6 +315,20 @@ Licensing depends entirely on the configured source data — verified at build t
 (OSM directly, or any provider whose road-network theme is OSM-derived, e.g. Overture) carry
 **ODbL**: the derived tile store and all served output must preserve attribution and honour
 share-alike obligations. Document exact attribution text before public release.
+
+---
+
+## 14. Native (non-wasm) use — planned, not yet built
+
+`openlr-codec`/`openlr-graph`/`openlr-engine`/`openlr-encoder`/`openlr-provider` have no
+`wasm-bindgen`/`wasm32` dependency today — they're already plain, portable Rust. `openlr-provider`
+already has a native `PmtilesReader` (`pmtiles.rs`, `std::fs::File`-based, no HTTP) alongside the
+byte-injection path the web app uses. A native CLI/HTTP binary crate (batch decode/encode against
+a local `.pmtiles` archive) is therefore mostly plumbing — **except** the waypoint-snapping/
+routing logic in `crates/openlr-wasm/src/lib.rs` (`snap_point`, `route_waypoints`,
+`boundary_candidates` — see §11), which is real encoding logic that currently exists only in the
+wasm-bindgen crate. That has to move into `openlr-encoder` (plain Rust types, no `JsValue`) before
+a native binary can reuse it instead of duplicating it. Not done as of this writing.
 
 ---
 

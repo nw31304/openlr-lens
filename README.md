@@ -1,8 +1,8 @@
 # OpenLRLens
 
-A browser-based diagnostic decoder for [OpenLR](https://www.openlr-association.com/) location references. The Rust core compiles to WebAssembly and runs the full codec, graph, and A\* path search entirely client-side. A MapLibre GL JS front end renders the decoded path and step-by-step diagnostics.
+A browser-based diagnostic decoder **and encoder** for [OpenLR](https://www.openlr-association.com/) location references. The Rust core compiles to WebAssembly and runs the full codec, graph, A\* path search, and encoder entirely client-side. A MapLibre GL JS front end renders the decoded/encoded path and step-by-step diagnostics.
 
-Two decode formats are supported:
+Two formats are supported, both for decode and encode:
 
 - **OpenLR binary v3** (TomTom) — 11.25° bearing buckets, ~58.6 m DNP buckets
 - **TPEG-OLR / ISO 21219-22** — full-precision intervals
@@ -16,9 +16,13 @@ BUILD TIME  (a few times per year, separate repo: openlr-pmtiles)
 RUNTIME  (browser, no server)
   PMTiles (range reads) ──▶ TileLoader ──▶ OpenLRDataProvider ──▶ in-memory graph
                                                     │
-  OpenLR string ──▶ codec (v3 / TPEG) ──▶ unified LRP model
+  decode:  OpenLR string ──▶ codec (v3 / TPEG) ──▶ unified LRP model
                                                     │
-                                  engine: candidate selection + A* + validation
+                             engine: candidate selection + A* + validation
+                                                    │
+  encode:  waypoints (map clicks) ──▶ snap + route ──▶ encoder (Rule-1/Rule-4)
+                                                    │
+                             codec (v3 / TPEG) ──▶ round-trip verify (decode)
                                                     │
                                          diagnostics + MapLibre UI
 ```
@@ -29,11 +33,12 @@ All map I/O stays in JavaScript. WASM receives pre-fetched tile bytes and operat
 
 | Crate | Role |
 |---|---|
-| `openlr-codec` | v3 / TPEG-OLR binary parsing → unified `Lrp` model |
+| `openlr-codec` | v3 / TPEG-OLR binary parsing and serialization ↔ unified `Lrp` model |
 | `openlr-graph` | Tile format, segment/node tables, geometry pool |
-| `openlr-engine` | Candidate selection, A\* (`state = (node, incoming_segment)`), scoring, diagnostics |
+| `openlr-engine` | Decode: candidate selection, A\* (`state = (node, incoming_segment)`), scoring, diagnostics |
+| `openlr-encoder` | Encode: Rule-1/Rule-4 Line and PointAlongLine encoding, boundary expansion, coverage sweep |
 | `openlr-provider` | `OpenLRDataProvider` trait + `PmtilesProvider` implementation |
-| `openlr-wasm` | `wasm-bindgen` glue exposing `decode` / `decode_forced` to JS |
+| `openlr-wasm` | `wasm-bindgen` glue exposing `Decoder` (decode) and `Encoder` (waypoint snapping, route preview, encode) to JS |
 
 The PMTiles builder (`openlr-pmtiles-build`, ingesting Overture, OSM, generic
 GeoJSONL, or a canonical DuckDB source) lives in a separate repo,
@@ -55,7 +60,8 @@ The UI is a stepped debugger, not just a result renderer:
 - **Candidate panel** — per-LRP candidate table with bearing wedge, DNP band, and per-term scores. Each candidate shows whether it snapped to an interior point, start endpoint, or end endpoint.
 - **A\* replay** — step-forward/backward through the search frontier.
 - **Forced-decode mode** — pin any candidate per LRP and re-run A\* to see why the encoder's intended path was accepted or rejected.
-- **LLM chat** — optional AI assistant with full access to the decode trace, candidate scores, and graph geometry. Bring your own key (OpenAI / Anthropic).
+- **Encode mode** — draw waypoints directly on the map (click to append, drag to insert/move) for a Line or PointAlongLine location; a live route preview snaps and routes between them as you go. Confirming the last waypoint automatically encodes to both binary v3 and TPEG-OLR and immediately decodes the result back, so every encode is round-trip-verified against the exact same engine a consumer would use.
+- **LLM chat** — optional AI assistant with full access to the decode trace, encode/verify state, candidate scores, and graph geometry. Bring your own key (OpenAI / Anthropic).
 
 ## Prerequisites
 

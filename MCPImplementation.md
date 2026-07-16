@@ -1,5 +1,11 @@
 # MCP Tool Implementation Spec
 
+> **Superseded — historical design reference, not a current spec.** These bindings
+> were implemented (and have since grown well beyond this doc — encode-side tools,
+> forced-decode, etc.). `crates/openlr-wasm/src/lib.rs` is the actual implementation
+> and `web/src/llm/tools.js` + `web/src/llm/SYSTEM_PROMPT.md` are the live tool
+> contracts; update those together when changing a tool, not this file.
+
 This document specifies the Rust/WASM changes needed to expose the MCP tool
 contracts defined in `OpenLR_LLM_Context.md`. Changes are additive — no
 existing interfaces break.

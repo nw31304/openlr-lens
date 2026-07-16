@@ -545,8 +545,12 @@ candidates for an LRP were rejected.
   report the location uncertainty range to the UI (especially material for v3's
   ±29 m bucket half-width).
 
-- **`diagnostics.rs` is a stub** — the desired-vs-actual forced-decode, feasibility
-  margin computation, and LP-based ranking flip check are not yet implemented.
+- **`diagnostics.rs` is a stub** — the *automated* root-cause verdict (feasibility
+  margin computation and LP-based ranking-flip check, closed-form decoder-tunable
+  vs. encoder-deficient classification) is not implemented. The manual mechanism it
+  would build on — pin a candidate per LRP and re-run A* (forced-decode mode) — *is*
+  implemented, in `web/src/components/TracePanel.jsx` and the LLM `retry_leg` tool;
+  see `Diagnosis.md` §8.
 
 - **RouteGenerator ordering** is approximately best-first, not exactly. For
   references with many LRPs and many candidates, the first winning combination may

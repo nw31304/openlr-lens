@@ -227,13 +227,17 @@ location.
 *No error is returned. This is the most important class to diagnose and the
 primary reason this tool exists.*
 
-Currently requires manual inspection of the trace panel. The **AI Chat** button in
-the ResultPanel (see WebFrontend.md §17) provides a conversational diagnostic aid:
-`buildSystemContext` injects the full trace into the LLM context so the model can
-reason about candidate scores, route choices, and parameter sensitivities. This is a
-human-in-the-loop tool, not an automated verdict.
+**Forced-decode mode is implemented**: pin any candidate per LRP (📌 in the
+TracePanel candidate table) and re-run A* against just those pinned
+candidates (`▶ Re-run with pinned candidates`), or drive the equivalent
+`retry_leg` tool from the LLM chat. This lets you test directly whether the
+path you expected is even feasible, and if so, why the decoder didn't pick
+it — but the comparison against the winning path is still manual (read the
+score tables side by side), not an automated verdict.
 
-The planned **forced-decode mode** (CLAUDE.md §10) will automate root-cause verdicts:
+The **automated root-cause verdict** described below — mechanically proving
+*decoder-tunable* vs. *encoder-deficient* — is **not implemented**. It would
+require:
 
 - **Decoder-tunable**: some parameter combination makes the correct path the
   strict unique winner — identified via closed-form gate margins and a linear
@@ -241,6 +245,13 @@ The planned **forced-decode mode** (CLAUDE.md §10) will automate root-cause ver
 - **Encoding-deficient**: no parameter combination recovers the correct path —
   the reference needs an additional or repositioned LRP, reported with a
   proof that no tuning recovers it.
+
+The AI Chat button in the ResultPanel (see `WebFrontend.md`) is the closest
+thing to this today: `buildSystemContext`/`buildEncodeDiagnosticPrompt` inject
+the full trace (and, in encode mode, the waypoint/route/verify state) into
+the LLM context so the model can reason about candidate scores, route
+choices, and parameter sensitivities, including calling `retry_leg` itself.
+This is a human-in-the-loop tool, not the closed-form proof above.
 
 ### Wrong candidate selected at an LRP
 
@@ -288,4 +299,4 @@ The planned **forced-decode mode** (CLAUDE.md §10) will automate root-cause ver
 | §5 Tile-load cap exceeded | none (aborts before any trace) | ✅ suggests reducing search factor | skip-and-continue instead of full restart |
 | §6 DNP mismatch | Summary | ✅ | — |
 | §7 Offset trimming | Summary | trace panel only | `OffsetFailed` event |
-| §8 Silent misdecode | Full | ❌ | forced-decode mode |
+| §8 Silent misdecode | Full | ⚠️ manual (forced-decode + AI chat) | automated tunability verdict |
