@@ -171,6 +171,17 @@ function tilesForBounds(bounds, z) {
   return tiles;
 }
 
+// Parses MapLibre's `hash: true` URL format: `#{zoom}/{lat}/{lng}[/{bearing}/{pitch}]`
+// (see maplibre-gl's Hash._onHashChange) — just enough to read back the center
+// it encodes, not to fully replicate hash restoration.
+function parseMapHash(hash) {
+  if (!hash) return null;
+  const parts = hash.replace(/^#/, '').split('/');
+  if (parts.length < 3 || parts.some(p => isNaN(parseFloat(p)))) return null;
+  const [, lat, lng] = parts;
+  return { lat: parseFloat(lat), lng: parseFloat(lng) };
+}
+
 // ── LRP bearing helper ─────────────────────────────────────────────────────────
 
 function formatBearing(lb, ub) {
@@ -462,7 +473,8 @@ function addMapImages(map) {
 
 // ── Map Component ──────────────────────────────────────────────────────────────
 
-export default function MapView({ tilesBase, ready, initialBounds }) {
+export default function MapView({ tilesBase, ready }) {
+  const archiveBounds = useStore(s => s.archiveBounds);
   const mapContainer    = useRef(null);
   const mapRef          = useRef(null);
   const tileCacheRef    = useRef(new Map());
@@ -1520,18 +1532,31 @@ export default function MapView({ tilesBase, ready, initialBounds }) {
   }, []);
 
   // ── Fly to the configured PMTiles archive's bounds ───────────────────────────
-  // `initialBounds` starts `null` and is set at most once, after App.jsx's
+  // `archiveBounds` starts `null` and is set at most once, after App.jsx's
   // startup effect resolves `pmtiles.getHeader()` (or stays `null` forever if
   // that lookup fails or returns a degenerate box — the map just keeps its
-  // world-view default from the constructor above). Skipped if the page
-  // loaded with an explicit #hash (a bookmark/share link naming a specific
-  // view) or if the user already started panning/zooming before this fired.
+  // world-view default from the constructor above). Skipped if the user
+  // already started panning/zooming before this fired, or if the page
+  // loaded with an explicit #hash whose center actually falls inside this
+  // archive's bounds (a bookmark/share link naming a specific view of *this*
+  // dataset). A hash pointing somewhere else entirely — e.g. left over from
+  // viewing a different, geographically disjoint archive before switching
+  // `?tiles=` — is stale, not a deliberate view to preserve, and must not
+  // override this: MapLibre's `hash: true` keeps rewriting the URL on every
+  // pan/zoom regardless of which dataset is loaded, so an unrelated old
+  // hash is the common case here, not the exception.
   useEffect(() => {
-    if (!initialBounds) return;
-    if (initialHashRef.current) return;
+    if (!archiveBounds) return;
     if (userInteractedRef.current) return;
-    mapRef.current?.fitBounds(initialBounds, { padding: 40, duration: 0 });
-  }, [initialBounds]);
+    const hashView = parseMapHash(initialHashRef.current);
+    if (hashView) {
+      const [[minLon, minLat], [maxLon, maxLat]] = archiveBounds;
+      const withinBounds = hashView.lng >= minLon && hashView.lng <= maxLon
+        && hashView.lat >= minLat && hashView.lat <= maxLat;
+      if (withinBounds) return;
+    }
+    mapRef.current?.fitBounds(archiveBounds, { padding: 40, duration: 0 });
+  }, [archiveBounds]);
 
   // ── Basemap switch ───────────────────────────────────────────────────────────
 

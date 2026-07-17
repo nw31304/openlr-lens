@@ -251,6 +251,11 @@ export const useStore = create(persist(
  (set, get) => ({
   openlrString: '',
   tileUrl: 'http://localhost:5176',
+  // [[minLon,minLat],[maxLon,maxLat]] | null — the configured PMTiles
+  // archive's own coverage, from its header (see App.jsx's startup effect).
+  // null if that lookup failed/returned a degenerate box; callers must treat
+  // "unknown" and "no bounds" as the same case (skip any bounds-based check).
+  archiveBounds: null,
   params: { ...PRESETS.Default },
   showParams: false,
   showLlmSettings: false,
@@ -317,6 +322,7 @@ export const useStore = create(persist(
   verifyReplayStep: 0,
 
   setOpenlrString: (s) => set({ openlrString: s }),
+  setArchiveBounds: (b) => set({ archiveBounds: b }),
   setTileUrl: (url) => set({ tileUrl: url }),
 
   resetToDefaults: () => set({ params: { ...PRESETS.Default } }),
@@ -717,6 +723,33 @@ export const useStore = create(persist(
         'lfrcnp_tolerance:', params.lfrcnp_tolerance);
       const startResult = JSON.parse(_decoder.start(openlrString.trim(), paramsJson, _zoom));
       console.log(`[timing] start(): ${(performance.now()-t0).toFixed(1)} ms`);
+
+      // If the loaded archive's own coverage is known, check whether any LRP
+      // falls within it before spending a round trip on tile fetches that a
+      // reference entirely outside the archive would never satisfy anyway —
+      // reference_summary() needs no tiles loaded at all, so this is free.
+      // (This is exactly the failure mode that prompted adding this check:
+      // a reference from a different region decoded against the wrong
+      // archive, surfacing only as an opaque "no candidate segments found"
+      // after 12 wasted tile-fetch attempts.)
+      const archiveBounds = get().archiveBounds;
+      if (archiveBounds) {
+        const { lrps } = JSON.parse(_decoder.reference_summary());
+        const [[minLon, minLat], [maxLon, maxLat]] = archiveBounds;
+        const PAD_DEG = 0.1; // ~11km at the equator — slack for search radius/DNP near an edge
+        const inBounds = l => l.lon >= minLon - PAD_DEG && l.lon <= maxLon + PAD_DEG
+          && l.lat >= minLat - PAD_DEG && l.lat <= maxLat + PAD_DEG;
+        if (lrps?.length && !lrps.some(inBounds)) {
+          const bbox = [minLon, minLat, maxLon, maxLat].map(v => v.toFixed(3)).join(', ');
+          const msg = `This reference falls outside the loaded archive's coverage `
+            + `(archive bbox: [${bbox}]; LRP 0 at (${lrps[0].lon.toFixed(4)}, ${lrps[0].lat.toFixed(4)})). `
+            + `Point the app at a different tile source, or check that this reference actually belongs to this region.`;
+          console.warn(`[decode] ${msg}`);
+          result = clientDecodeFailure(msg);
+          set({ decoding: false, decodeResult: result, decodeToast: { message: msg }, replaySteps: [], replayStats: null, replayStep: 0 });
+          return;
+        }
+      }
 
       console.log('[decode] requested tiles:', startResult.tiles.map(([z,x,y]) => `${z}/${x}/${y}`));
       let loadedTiles = 0;

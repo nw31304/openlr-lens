@@ -18,7 +18,6 @@ export default function App() {
   const [error, setError]   = useState(null);
   const [tilesBase, setTilesBase] = useState('/tiles');
   const [urlDraft, setUrlDraft]   = useState('');
-  const [initialBounds, setInitialBounds] = useState(null); // [[minLon,minLat],[maxLon,maxLat]] | null
 
   const { showResult, toggleResult, showTrace, toggleTrace, showReplay, mode, replaySteps: decodeReplaySteps, verifyReplaySteps } = useStore();
   const replaySteps = mode === 'encode' ? verifyReplaySteps : decodeReplaySteps;
@@ -52,7 +51,7 @@ export default function App() {
         const { minLon, minLat, maxLon, maxLat } = header ?? {};
         const boundsValid = [minLon, minLat, maxLon, maxLat].every(Number.isFinite)
           && maxLon > minLon && maxLat > minLat;
-        setInitialBounds(boundsValid ? [[minLon, minLat], [maxLon, maxLat]] : null);
+        useStore.getState().setArchiveBounds(boundsValid ? [[minLon, minLat], [maxLon, maxLat]] : null);
         setReady(true);
       } catch (e) {
         setError(e.message);
@@ -105,7 +104,7 @@ export default function App() {
 
         {/* ── Map area ─────────────────────────────────────── */}
         <div className="map-area">
-          <MapView tilesBase={tilesBase} ready={ready} initialBounds={initialBounds} />
+          <MapView tilesBase={tilesBase} ready={ready} />
 
           {/* Panel edge tabs — always visible; arrow direction shows open/closed state */}
           <button
