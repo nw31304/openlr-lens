@@ -1,4 +1,4 @@
-# OpenLRLens
+# OpenLRLab
 
 A browser-based diagnostic decoder **and encoder** for [OpenLR](https://www.openlr-association.com/) location references. The Rust core compiles to WebAssembly and runs the full codec, graph, A\* path search, and encoder entirely client-side. A MapLibre GL JS front end renders the decoded/encoded path and step-by-step diagnostics.
 

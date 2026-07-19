@@ -1,6 +1,6 @@
 # OpenLR Decoding — Step-by-Step Reference for LLM Interpretation
 
-This document describes how the OpenLRLens decoder works. It is intended to help an LLM
+This document describes how the OpenLRLab decoder works. It is intended to help an LLM
 correctly interpret JSON trace data emitted during a decode attempt. Read it before
 attempting to diagnose a decode result.
 

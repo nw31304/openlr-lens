@@ -1,4 +1,4 @@
-# OpenLRLens — Web Frontend
+# OpenLRLab — Web Frontend
 
 This document describes the web frontend: its architecture, component tree, state
 management, WASM decode/encode protocol, MapLibre layer model, and the tile geometry
@@ -85,7 +85,7 @@ are listed in §20.2.
 
 ### Zustand `persist` and the `merge` function
 
-Params are persisted to `localStorage` under the key `openlrlens-settings`. The `persist`
+Params are persisted to `localStorage` under the key `openlrlab-settings`. The `persist`
 middleware uses a custom `merge` function so that new fields added to `PRESETS.Default` in
 a future release survive localStorage upgrades without reverting to `undefined`:
 

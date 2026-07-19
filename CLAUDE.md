@@ -1,4 +1,4 @@
-# CLAUDE.md — OpenLRLens
+# CLAUDE.md — OpenLRLab
 
 Browser-based WebAssembly OpenLR **diagnostic decoder and encoder** with global coverage. Rust core
 → WASM does codec + graph + A* + encoder entirely client-side; JS/MapLibre front end renders

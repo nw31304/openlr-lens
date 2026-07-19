@@ -1,4 +1,4 @@
-//! WebAssembly bindings for the OpenLRLens decode engine.
+//! WebAssembly bindings for the OpenLRLab decode engine.
 //!
 //! # JS usage pattern
 //!
@@ -369,14 +369,14 @@ impl Decoder {
                     }
                     // Slow path: NaN/Inf in some event field.  Serialise events one by one,
                     // dropping the offending ones.  Params are always finite, so they succeed.
-                    warn("openlrlens: trace has non-finite floats; retrying per-event");
+                    warn("openlrlab: trace has non-finite floats; retrying per-event");
                     let n_total = t.events.len();
                     let events: Vec<serde_json::Value> = t.events.iter()
                         .filter_map(|ev| serde_json::to_value(ev).ok())
                         .collect();
                     let skipped = n_total - events.len();
                     if skipped > 0 {
-                        warn(&format!("openlrlens: dropped {skipped} trace events with non-finite floats"));
+                        warn(&format!("openlrlab: dropped {skipped} trace events with non-finite floats"));
                     }
                     let params_val = serde_json::to_value(&t.params)
                         .unwrap_or(serde_json::Value::Null);
@@ -449,7 +449,7 @@ impl Decoder {
                     Ok(s) => s,
                     Err(e) => {
                         // LrpInfo contained a non-finite f64 — drop lrps/trace rather than panic.
-                        warn(&format!("openlrlens: failure result serialisation failed ({e}); dropping lrps"));
+                        warn(&format!("openlrlab: failure result serialisation failed ({e}); dropping lrps"));
                         serde_json::to_string(&JsDecodeResult::err(&error_str)).unwrap()
                     }
                 };

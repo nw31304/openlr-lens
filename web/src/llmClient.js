@@ -53,7 +53,7 @@ export const PROVIDERS = [
 // The API key is stored in localStorage under a dedicated key, separate from
 // the main settings store.  It is only ever sent to the configured provider URL.
 
-const STORAGE_KEY = 'openlrlens.llm';
+const STORAGE_KEY = 'openlrlab.llm';
 
 export function loadLlmConfig() {
   try {

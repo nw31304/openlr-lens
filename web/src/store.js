@@ -1301,7 +1301,7 @@ export const useStore = create(persist(
   },
  }),
  {
-   name: 'openlrlens-settings',
+   name: 'openlrlab-settings',
    partialize: (state) => ({
      openlrString: state.openlrString,
      tileUrl: state.tileUrl,

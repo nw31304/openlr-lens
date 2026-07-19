@@ -1,5 +1,5 @@
 /**
- * Decode an OpenLRLens v3 tile payload (custom binary format) into GeoJSON features.
+ * Decode an OpenLRLab v3 tile payload (custom binary format) into GeoJSON features.
  *
  * Layout:
  *   Header              40 bytes

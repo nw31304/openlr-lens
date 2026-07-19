@@ -87,7 +87,7 @@ export default function MenuBar() {
 
   return (
     <div className="menu-bar">
-      <span className="menu-title">OpenLRLens</span>
+      <span className="menu-title">OpenLRLab</span>
 
       <div className="mode-toggle">
         <button
