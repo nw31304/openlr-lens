@@ -259,9 +259,18 @@ export const useStore = create(persist(
   params: { ...PRESETS.Default },
   showParams: false,
   showLlmSettings: false,
+  showDocs: false,
   showTrace: false,
   showResult: false,
   showReplay: false,
+  // Lifted out of MenuBar's own local state (rather than kept there) so the
+  // onboarding tour can open it from a different component, the same way it
+  // opens the Results/Trace panels.
+  showTileSourceMenu: false,
+  // Onboarding tour: hasSeenTour is persisted (so it only auto-starts once
+  // per browser); tourStep is transient (null = not running).
+  hasSeenTour: false,
+  tourStep: null,
   llmConfig: loadLlmConfig(),
   llmChatOpen: false,
   llmMessages: [],       // display: { role, content, display?, error? }
@@ -356,7 +365,15 @@ export const useStore = create(persist(
   }),
 
   toggleParams:        () => set(state => ({ showParams:        !state.showParams })),
+  openParams:          () => set({ showParams: true }),
+  closeParams:         () => set({ showParams: false }),
+  toggleTileSourceMenu: () => set(state => ({ showTileSourceMenu: !state.showTileSourceMenu })),
+  openTileSourceMenu:  () => set({ showTileSourceMenu: true }),
+  closeTileSourceMenu: () => set({ showTileSourceMenu: false }),
   toggleLlmSettings:   () => set(state => ({ showLlmSettings:   !state.showLlmSettings })),
+  toggleDocs:          () => set(state => ({ showDocs: !state.showDocs })),
+  openDocs:            () => set({ showDocs: true }),
+  closeDocs:           () => set({ showDocs: false }),
 
   setLlmConfig: (config) => { saveLlmConfig(config); set({ llmConfig: config }); },
   clearLlmConfig: () => { clearLlmStorage(); set({ llmConfig: null }); },
@@ -526,6 +543,7 @@ export const useStore = create(persist(
     }));
   },
   toggleTrace:         () => set(state => ({ showTrace:         !state.showTrace })),
+  openTrace:           () => set({ showTrace: true }),
   toggleReplay:        () => set(state => ({ showReplay:        !state.showReplay })),
   toggleSegmentLayer:  () => set(state => ({ showSegmentLayer:  !state.showSegmentLayer })),
 
@@ -562,6 +580,16 @@ export const useStore = create(persist(
   hideResult:    () => set({ showResult: false }),
   openResult:    () => set({ showResult: true }),
   toggleResult:  () => set(state => ({ showResult: !state.showResult })),
+
+  // Onboarding tour -- tourStep is null when not running, else an index into
+  // the step array OnboardingTour.jsx owns (content lives there, not here).
+  // -1 = intro splash (a big branded moment before the step-by-step tour);
+  // nextTourStep() from -1 lands on 0, the first real spotlight step.
+  startTour:     () => set({ tourStep: -1 }),
+  nextTourStep:  () => set(state => ({ tourStep: state.tourStep == null ? null : state.tourStep + 1 })),
+  prevTourStep:  () => set(state => ({ tourStep: state.tourStep > 0 ? state.tourStep - 1 : state.tourStep })),
+  endTour:       () => set({ tourStep: null, hasSeenTour: true }),
+
   clearDecodeToast: () => set({ decodeToast: null }),
   // "Clear" button next to Decode — wipes the input and everything a decode
   // produced (map layers follow decodeResult:null automatically), so the
@@ -1308,6 +1336,7 @@ export const useStore = create(persist(
      params: state.params,
      savedParamSets: state.savedParamSets,
      maxEncodeLegM: state.maxEncodeLegM,
+     hasSeenTour: state.hasSeenTour,
    }),
    // Deep-merge params so new fields added to PRESETS.Default survive across
    // localStorage upgrades — persisted values win, but missing fields fall back

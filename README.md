@@ -97,6 +97,29 @@ host (e.g. [`pmtiles serve`](https://github.com/protomaps/go-pmtiles), or
 R2/CDN with range-request support) and point the app at it via the **Tile
 source** menu.
 
+## Deployment
+
+Production hosting is Cloudflare Pages for the static SPA, with the `world.pmtiles` archive served from an R2 bucket via a same-origin Pages Function (`web/functions/tiles/[[path]].js`) rather than exposed directly — no CI, built and deployed locally with `wrangler`. Full details (one-time setup, R2 binding, env vars) are in `WebFrontend.md` §21.
+
+**One-time setup:**
+```sh
+npx wrangler login
+npx wrangler r2 bucket create openlr-lab-tiles       # enable R2 in the dashboard first, once per account
+npx wrangler pages project create openlr-lab --production-branch=main
+```
+
+**Push a tile archive to R2** (whenever `openlr-pmtiles` finishes a fresh build):
+```sh
+wrangler r2 object put openlr-lab-tiles/world.pmtiles --file=/path/to/world.pmtiles
+wrangler r2 object put openlr-lab-tiles/manifest.json --file=/path/to/manifest.json
+```
+
+**Day-to-day deploy:**
+```sh
+cd web && npm run deploy
+```
+This builds the WASM module fresh (it's gitignored, never committed), runs `vite build`, then `wrangler pages deploy dist --project-name=openlr-lab`.
+
 ## Tile format
 
 Custom binary payload (magic `OLRL`, version 3). All integers little-endian, single zoom level (default z12). Segments are post-split at every interior junction — junctions are never elided. Each segment and node carries a provider-defined opaque stable ID (UTF-8 string, stored in a per-tile string pool). See `CLAUDE.md §4–5` for the full layout.

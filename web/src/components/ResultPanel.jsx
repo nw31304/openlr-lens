@@ -6,19 +6,10 @@ import { computeTraversalDirections } from '../utils.js';
 import EncodeResultPanel from './EncodeResultPanel.jsx';
 import {
   isPointAlongLine, formatOpenlrFormat, frcLabel, fowLabel, fmtBearing, fmtInterval,
-  offsetRowValue, lfrcnpFull, ORIENTATION_LABEL, SIDE_OF_ROAD_LABEL,
+  offsetRowValue, lfrcnpFull, ORIENTATION_LABEL, SIDE_OF_ROAD_LABEL, HELP,
 } from '../refFormat.js';
 
 // ── Reference panel helpers ───────────────────────────────────────────────────
-
-const HELP = {
-  frc:     'Functional Road Class (0–7): how important the road is (0 = motorway, 7 = local path). Candidates must match within the configured FRC tolerance.',
-  fow:     'Form of Way: the geometric road type (motorway, dual carriageway, roundabout, slip road, etc.).',
-  bearing: 'Direction of travel at this LRP, clockwise from North. TomTomV3 uses an 11.25° sector (32 sectors); TPEG-OLR uses a 1.41° sector (256 sectors). Decoded against the interval ± the map tolerance.',
-  dnp:     'Distance to Next Point: encoded path length from this LRP to the next (meters). TomTomV3 quantises into ~58.6 m buckets (max ~14,901 m); TPEG-OLR is exact. The found route length must fall within this interval ± tolerance.',
-  lfrcnp:  'Lowest FRC to Next Point: the least-important road class the A* path between this LRP and the next may use. Prevents re-routing via minor roads when the encoder used a motorway.',
-  offset:  'Trim distance applied after route validation — positive from the path start, negative from the path end.',
-};
 
 function Help({ field }) {
   return <span className="ref-help" title={HELP[field]}>?</span>;

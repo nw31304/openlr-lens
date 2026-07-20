@@ -29,15 +29,18 @@ export default function MenuBar() {
     tileUrl, setTileUrl,
     decoding,
     mode, setMode, locationType, setLocationType,
+    startTour, openDocs,
+    showTileSourceMenu: showTileMenu, toggleTileSourceMenu, closeTileSourceMenu,
   } = useStore();
 
-  const [showTileMenu,  setShowTileMenu]  = useState(false);
   const [showTraceMenu, setShowTraceMenu] = useState(false);
   const [showLocTypeMenu, setShowLocTypeMenu] = useState(false);
+  const [showHelpMenu, setShowHelpMenu] = useState(false);
   const [urlDraft, setUrlDraft]           = useState('');
   const tileMenuRef   = useRef(null);
   const traceMenuRef  = useRef(null);
   const locTypeMenuRef = useRef(null);
+  const helpMenuRef    = useRef(null);
   const traceLevel   = params?.trace_level ?? 'Summary';
 
   // Sync urlDraft with the active tile URL whenever the menu opens.
@@ -50,11 +53,11 @@ export default function MenuBar() {
     if (!showTileMenu) return;
     const handler = (e) => {
       if (tileMenuRef.current && !tileMenuRef.current.contains(e.target))
-        setShowTileMenu(false);
+        closeTileSourceMenu();
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [showTileMenu]);
+  }, [showTileMenu]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close trace menu on outside click.
   useEffect(() => {
@@ -78,6 +81,17 @@ export default function MenuBar() {
     return () => document.removeEventListener('mousedown', handler);
   }, [showLocTypeMenu]);
 
+  // Close help menu on outside click.
+  useEffect(() => {
+    if (!showHelpMenu) return;
+    const handler = (e) => {
+      if (helpMenuRef.current && !helpMenuRef.current.contains(e.target))
+        setShowHelpMenu(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showHelpMenu]);
+
   function applyTileUrl() {
     const trimmed = urlDraft.trim();
     if (!trimmed) return;
@@ -89,7 +103,7 @@ export default function MenuBar() {
     <div className="menu-bar">
       <span className="menu-title">OpenLRLab</span>
 
-      <div className="mode-toggle">
+      <div className="mode-toggle" data-tour="mode-toggle">
         <button
           className={`mode-toggle-btn${mode !== 'encode' ? ' active' : ''}`}
           onClick={() => setMode('decode')}
@@ -130,6 +144,7 @@ export default function MenuBar() {
         className={`menu-btn${showSegmentLayer ? ' active' : ''}`}
         onClick={toggleSegmentLayer}
         title="Toggle road segment layer"
+        data-tour="view-tabs"
       >Segments</button>
 
       {mode !== 'encode' && (
@@ -138,12 +153,15 @@ export default function MenuBar() {
             className={`menu-btn${showTrace ? ' active' : ''}`}
             onClick={toggleTrace}
             title="Toggle decode trace panel"
+            data-tour="view-tabs"
           >Trace</button>
 
           <button
             className={`menu-btn${showReplay ? ' active' : ''}`}
             onClick={toggleReplay}
             title="Toggle step replay bar"
+            data-tour="view-tabs"
+            data-tour-solo="replay-btn"
           >Replay</button>
 
           {decodeResult && (
@@ -151,6 +169,7 @@ export default function MenuBar() {
               className={`menu-btn${showResult ? ' active' : ''}`}
               onClick={toggleResult}
               title="Toggle results panel"
+              data-tour="view-tabs"
             >
               Results
               {decodeResult.ok
@@ -163,12 +182,12 @@ export default function MenuBar() {
 
       <div className="menu-spacer" />
 
-      <button className="menu-btn" onClick={toggleParams} title="Decode parameters">
+      <button className="menu-btn" onClick={toggleParams} title="Decode parameters" data-tour-solo="params-btn">
         Parameters
       </button>
 
       {/* Trace level dropdown */}
-      <div className="menu-tile-wrap" ref={traceMenuRef}>
+      <div className="menu-tile-wrap" ref={traceMenuRef} data-tour="config-tools">
         <button
           className={`menu-btn${showTraceMenu ? ' active' : ''}`}
           onClick={() => setShowTraceMenu(v => !v)}
@@ -194,6 +213,7 @@ export default function MenuBar() {
           className={`menu-btn${llmChatOpen ? ' active' : ''}`}
           onClick={toggleLlmChat}
           title="AI chat"
+          data-tour="config-tools"
         >AI Chat</button>
       )}
 
@@ -201,13 +221,14 @@ export default function MenuBar() {
         className={`menu-btn${llmConfig ? ' configured' : ''}`}
         onClick={toggleLlmSettings}
         title="AI / LLM settings"
+        data-tour="config-tools"
       >AI{llmConfig ? ' ●' : ''}</button>
 
       {/* Tile source dropdown */}
-      <div className="menu-tile-wrap" ref={tileMenuRef}>
+      <div className="menu-tile-wrap" ref={tileMenuRef} data-tour-solo="tile-source">
         <button
           className={`menu-btn${showTileMenu ? ' active' : ''}`}
-          onClick={() => setShowTileMenu(v => !v)}
+          onClick={toggleTileSourceMenu}
           title="Tile source"
         >Tile source</button>
 
@@ -230,6 +251,28 @@ export default function MenuBar() {
               onClick={applyTileUrl}
               disabled={!urlDraft.trim()}
             >Apply &amp; reload</button>
+          </div>
+        )}
+      </div>
+
+      {/* Help dropdown: quick tour vs. full documentation */}
+      <div className="menu-tile-wrap" ref={helpMenuRef}>
+        <button
+          className={`menu-help-btn${showHelpMenu ? ' active' : ''}`}
+          onClick={() => setShowHelpMenu(v => !v)}
+          title="Help"
+        >?</button>
+
+        {showHelpMenu && (
+          <div className="menu-tile-dropdown menu-help-dropdown">
+            <button
+              className="menu-trace-opt"
+              onClick={() => { setShowHelpMenu(false); startTour(); }}
+            >Quick Tour</button>
+            <button
+              className="menu-trace-opt"
+              onClick={() => { setShowHelpMenu(false); openDocs(); }}
+            >Documentation</button>
           </div>
         )}
       </div>

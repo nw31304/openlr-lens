@@ -6,6 +6,19 @@
 // same format, or DNP/LFRCNP shown on the last LRP in one panel but not the
 // other (that field is meaningless there -- no "next point" after the last).
 
+// Same "single source of truth" reasoning as the labels below -- rendered
+// both as the `?` tooltips next to each field in ResultPanel's Reference
+// section, and (unmodified) as the Decode Parameters section of the in-app
+// Documentation panel, so the two can't drift apart from each other.
+export const HELP = {
+  frc:     'Functional Road Class (0–7): how important the road is (0 = motorway, 7 = local path). Candidates must match within the configured FRC tolerance.',
+  fow:     'Form of Way: the geometric road type (motorway, dual carriageway, roundabout, slip road, etc.).',
+  bearing: 'Direction of travel at this LRP, clockwise from North. TomTomV3 uses an 11.25° sector (32 sectors); TPEG-OLR uses a 1.41° sector (256 sectors). Decoded against the interval ± the map tolerance.',
+  dnp:     'Distance to Next Point: encoded path length from this LRP to the next (meters). TomTomV3 quantises into ~58.6 m buckets (max ~14,901 m); TPEG-OLR is exact. The found route length must fall within this interval ± tolerance.',
+  lfrcnp:  'Lowest FRC to Next Point: the least-important road class the A* path between this LRP and the next may use. Prevents re-routing via minor roads when the encoder used a motorway.',
+  offset:  'Trim distance applied after route validation — positive from the path start, negative from the path end.',
+};
+
 export const FRC_LABEL = [
   'FRC0 · Motorway', 'FRC1 · Trunk', 'FRC2 · Secondary', 'FRC3 · Tertiary',
   'FRC4 · Unclassified', 'FRC5 · Residential', 'FRC6 · Service/Link', 'FRC7 · Other/Path',

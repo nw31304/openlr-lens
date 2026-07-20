@@ -342,3 +342,17 @@ a native binary can reuse it instead of duplicating it. Not done as of this writ
   change belongs there first, then propagates to `openlr-provider`'s decoder in this repo.
 - When a decision is genuinely open, state the assumption inline and proceed; never silently
   violate a Critical Invariant to make something compile.
+- **Docs and the onboarding tour drift silently — treat that as a bug, not cosmetic.** Nothing
+  fails a build when `README.md`/`WebFrontend.md`, `web/src/docs/userGuide.md` (Documentation
+  panel), or `web/src/components/OnboardingTour.jsx` fall out of sync with the actual UI/behavior —
+  a stale tutorial or a tour spotlight pointing at nothing just looks like the tool doesn't work.
+  Whenever a change touches user-facing behavior:
+  - Adding/renaming/removing a menu item, panel, or decode/encode parameter → update
+    `userGuideMd` and/or the `HELP` object in `refFormat.js` (the single source shared by the `?`
+    tooltips and the Documentation panel's parameter reference — edit it once, not both places).
+  - Renaming or removing a DOM element/class that carries a `data-tour` / `data-tour-solo`
+    attribute, or restructuring where one lives → grep for that selector in
+    `OnboardingTour.jsx`'s `STEPS` array first. `unionRect()` degrades silently on a no-match
+    selector (empty spotlight, not an error), so a broken tour step won't surface on its own.
+  - Architecture/setup changes (new crate, changed build/deploy steps, new invariant) → update
+    the relevant doc in this repo (`README.md`, `WebFrontend.md`, or this file).

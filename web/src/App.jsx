@@ -9,6 +9,8 @@ import TracePanel   from './components/TracePanel.jsx';
 import ParamsPanel  from './components/ParamsPanel.jsx';
 import LlmSettingsPanel from './components/LlmSettingsPanel.jsx';
 import LlmChatPanel     from './components/LlmChatPanel.jsx';
+import DocumentationPanel from './components/DocumentationPanel.jsx';
+import OnboardingTour   from './components/OnboardingTour.jsx';
 import { setPmtiles, setDecoder, setEncoder, setZoom, useStore } from './store.js';
 import DecodeToast from './components/DecodeToast.jsx';
 import { initWasm } from './wasm.js';
@@ -19,8 +21,15 @@ export default function App() {
   const [tilesBase, setTilesBase] = useState('/tiles');
   const [urlDraft, setUrlDraft]   = useState('');
 
-  const { showResult, toggleResult, showTrace, toggleTrace, showReplay, mode, replaySteps: decodeReplaySteps, verifyReplaySteps } = useStore();
+  const { showResult, toggleResult, showTrace, toggleTrace, showReplay, mode, replaySteps: decodeReplaySteps, verifyReplaySteps,
+          hasSeenTour, tourStep, startTour } = useStore();
   const replaySteps = mode === 'encode' ? verifyReplaySteps : decodeReplaySteps;
+
+  // First-ever load (per browser): auto-start the onboarding tour once the
+  // app has actually finished loading, rather than over a blank/loading map.
+  useEffect(() => {
+    if (ready && !hasSeenTour && tourStep == null) startTour();
+  }, [ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function resolveBase() {
     const defaultBase = import.meta.env.VITE_TILE_BASE_URL || 'http://localhost:5176';
@@ -134,9 +143,11 @@ export default function App() {
       {/* ── Modals (remain floating over everything) ─────── */}
       <ParamsPanel />
       <LlmSettingsPanel />
+      <DocumentationPanel />
       <LlmChatPanel />
 
       <DecodeToast />
+      <OnboardingTour />
     </div>
   );
 }
