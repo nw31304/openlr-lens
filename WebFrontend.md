@@ -840,8 +840,32 @@ shares the Pages project's deploy lifecycle.
 
 **Getting tiles into R2** (manual, tied to whenever `openlr-pmtiles`'s `build-world`
 finishes a fresh archive — not automated, a completely separate tool/schedule):
+`world.pmtiles` is multi-GB — well past `wrangler r2 object put`'s 300MB size cap — so
+it's pushed via `rclone`'s S3-compatible backend instead; `manifest.json` is tiny and
+still just uses `wrangler` directly.
+
+One-time `rclone` remote setup (an R2 API token with object read/write scope, from the
+Cloudflare dashboard → R2 → Manage API Tokens, supplies the access key ID/secret):
 ```
-wrangler r2 object put openlr-lab-tiles/world.pmtiles --file=/path/to/world.pmtiles
+export RCLONE_CONFIG_R2_TYPE=s3
+export RCLONE_CONFIG_R2_PROVIDER=Cloudflare
+export RCLONE_CONFIG_R2_ACCESS_KEY_ID=<access_key_id>
+export RCLONE_CONFIG_R2_SECRET_ACCESS_KEY=<secret_access_key>
+export RCLONE_CONFIG_R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+export RCLONE_CONFIG_R2_REGION=auto
+```
+These are environment variables, not `rclone config`'s interactive inline connection-
+string syntax (`:s3,provider=...,endpoint=...:path`) — the endpoint URL's own `https://`
+colon breaks that parser. Keep the token out of shell history/config files on disk;
+source it from a private env file you don't commit, or export it interactively per
+session.
+
+`--s3-no-check-bucket` is required on every `rclone` call below: rclone's S3 backend
+otherwise tries to verify/create the destination bucket first, which a correctly
+scoped-down R2 API token (object read/write only, no bucket-admin) rejects with a 403.
+
+```
+rclone copyto /path/to/world.pmtiles r2:openlr-lab-tiles/world.pmtiles --s3-no-check-bucket -P
 wrangler r2 object put openlr-lab-tiles/manifest.json --file=/path/to/manifest.json
 ```
 

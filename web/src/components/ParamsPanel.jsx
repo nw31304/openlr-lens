@@ -4,7 +4,7 @@ import { useStore } from '../store.js';
 
 // ── Parameter docs ────────────────────────────────────────────────────────────
 
-const PARAM_DOCS = {
+export const PARAM_DOCS = {
   candidate_search_radius_m: {
     what: 'Maximum distance from each LRP coordinate to the nearest point on a road segment for that segment to be considered a candidate. Acts as the initial spatial filter before scoring.',
     increase: 'Recovers decodes where the map diverges significantly from the encoding map — the correct road is further away than expected. Cost: more candidates to score and route, slower per LRP.',
@@ -104,7 +104,7 @@ const PARAM_DOCS = {
 
 // ── Field definitions ─────────────────────────────────────────────────────────
 
-const SCALAR_FIELDS = [
+export const SCALAR_FIELDS = [
   { key: 'candidate_search_radius_m',    label: 'Search radius',          unit: 'm',     step: 10,    min: 10,    max: 500    },
   { key: 'snap_to_endpoint_threshold_m', label: 'Snap threshold',         unit: 'm',     step: 1,     min: 0,     max: 50     },
   { key: 'distance_weight',              label: 'Distance weight',         unit: '',      step: 0.05,  min: 0,     max: 2      },
@@ -128,7 +128,7 @@ const SCALAR_FIELDS = [
 // Fields whose value lives outside `params` (their own store slice, own
 // setter) — not part of SCALAR_FIELDS' generic params[key]/setParam loop,
 // but still documented/titled the same way via ParamDocPopout.
-const EXTRA_FIELDS = {
+export const EXTRA_FIELDS = {
   max_leg_m: { label: 'Max inter-LRP dist.', unit: 'm' },
 };
 

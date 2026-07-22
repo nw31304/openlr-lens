@@ -9,7 +9,7 @@ import TracePanel   from './components/TracePanel.jsx';
 import ParamsPanel  from './components/ParamsPanel.jsx';
 import LlmSettingsPanel from './components/LlmSettingsPanel.jsx';
 import LlmChatPanel     from './components/LlmChatPanel.jsx';
-import DocumentationPanel from './components/DocumentationPanel.jsx';
+import DocumentationPage from './components/DocumentationPage.jsx';
 import OnboardingTour   from './components/OnboardingTour.jsx';
 import { setPmtiles, setDecoder, setEncoder, setZoom, useStore } from './store.js';
 import DecodeToast from './components/DecodeToast.jsx';
@@ -30,6 +30,17 @@ export default function App() {
   useEffect(() => {
     if (ready && !hasSeenTour && tourStep == null) startTour();
   }, [ready]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep `route` in sync with the browser back/forward buttons -- openDocs/
+  // closeDocs (store.js) already pushState when navigating *within* the app,
+  // this is only for history navigation the app itself didn't initiate.
+  useEffect(() => {
+    const onPopState = () => {
+      useStore.setState({ route: window.location.pathname === '/docs' ? 'docs' : 'app' });
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   function resolveBase() {
     const defaultBase = import.meta.env.VITE_TILE_BASE_URL || 'http://localhost:5176';
@@ -143,11 +154,16 @@ export default function App() {
       {/* ── Modals (remain floating over everything) ─────── */}
       <ParamsPanel />
       <LlmSettingsPanel />
-      <DocumentationPanel />
       <LlmChatPanel />
 
       <DecodeToast />
       <OnboardingTour />
+
+      {/* ── Documentation: a full-page overlay (route === 'docs'), not a modal --
+          the rest of the app above stays mounted underneath (map/decoder state
+          alive), so closing it returns to exactly where you left off. Rendered
+          last so its z-index sits on top of everything else. ── */}
+      <DocumentationPage />
     </div>
   );
 }

@@ -2371,39 +2371,41 @@ html, body, #root, .app {
   background: rgba(255, 255, 255, 0.1);
 }
 
-/* ── Documentation panel ──────────────────────────────────────────────────── */
+/* ── Documentation page (full-page overlay, not a modal) ─────────────────────
+   Sits above the whole app (higher z-index than any panel/modal below) --
+   the app underneath stays mounted so map/decoder state survives a visit. */
 
-.docs-panel {
-  position: absolute;
-  top: 48px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: calc(100% - 32px);
-  max-width: 760px;
-  max-height: calc(100vh - 88px);
+.docs-page {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
   display: flex;
   flex-direction: column;
-  background: rgba(10, 10, 20, 0.94);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-  z-index: 11;
-  padding: 0;
+  background: #0a0a14;
   color: #ddd;
 }
 
-.docs-panel-header {
+.docs-page-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px 8px;
+  gap: 14px;
+  padding: 14px 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
 }
 
-.docs-panel-title {
+.docs-page-back {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #ddd;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+.docs-page-back:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
+
+.docs-page-title {
   font-size: 12px;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.5);
@@ -2411,49 +2413,70 @@ html, body, #root, .app {
   text-transform: uppercase;
 }
 
-.docs-panel-close {
-  background: none;
-  border: none;
-  color: rgba(255, 255, 255, 0.4);
-  font-size: 14px;
-  cursor: pointer;
-  padding: 2px 4px;
-  line-height: 1;
-  border-radius: 4px;
-}
-.docs-panel-close:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
-
-.docs-panel-body {
+.docs-page-body {
   overflow-y: auto;
-  padding: 4px 20px 20px;
   flex: 1;
-  font-size: 13px;
-  line-height: 1.6;
+  padding: 32px 24px 80px;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
-.docs-panel-body h1 {
-  font-size: 18px;
-  color: #00d4ff;
-  margin: 14px 0 8px;
+/* Centered, readable measure -- this is a document meant to be read top to
+   bottom, not a dense side panel, so it gets a real content column instead
+   of stretching full-width on wide screens. */
+.docs-page-body > * {
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
 }
-.docs-panel-body h2 {
-  font-size: 15px;
+
+.docs-page-body h1 {
+  font-size: 24px;
+  color: #00d4ff;
+  margin: 0 0 12px;
+}
+.docs-page-body h2 {
+  font-size: 18px;
   color: #e8e8f0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  padding-bottom: 4px;
+  padding-bottom: 6px;
+  margin: 32px 0 12px;
+}
+.docs-page-body h3 {
+  font-size: 15px;
+  color: #00d4ff;
   margin: 22px 0 8px;
 }
-.docs-panel-body p { margin: 8px 0; color: #ccc; }
-.docs-panel-body ul, .docs-panel-body ol { padding-left: 22px; margin: 8px 0; }
-.docs-panel-body li { margin: 4px 0; color: #ccc; }
-.docs-panel-body code {
+.docs-page-body p { margin: 10px 0; color: #ccc; }
+.docs-page-body ul, .docs-page-body ol { padding-left: 24px; margin: 10px 0; }
+.docs-page-body li { margin: 5px 0; color: #ccc; }
+.docs-page-body code {
   background: rgba(255, 255, 255, 0.08);
   padding: 1px 5px;
   border-radius: 3px;
-  font-size: 12px;
+  font-size: 13px;
 }
-.docs-panel-body a { color: #00d4ff; }
-.docs-panel-body strong { color: #e8e8f0; }
+.docs-page-body a { color: #00d4ff; cursor: pointer; }
+.docs-page-body strong { color: #e8e8f0; }
+.docs-page-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 13px;
+}
+.docs-page-body th, .docs-page-body td {
+  text-align: left;
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: #ccc;
+}
+.docs-page-body th {
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
 
 .docs-param-list {
   margin: 8px 0 0;
@@ -2468,6 +2491,20 @@ html, body, #root, .app {
   color: #ccc;
   padding-left: 2px;
 }
+
+.docs-param-detail {
+  margin: 14px 0;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+}
+.docs-param-detail-title {
+  font-weight: 600;
+  color: #e8e8f0;
+  margin-bottom: 4px;
+}
+.docs-param-detail p { margin: 4px 0; color: #ccc; font-size: 13px; }
 
 /* ── Presets bar ─────────────────────────────────────────────────────────────── */
 

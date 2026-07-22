@@ -259,7 +259,14 @@ export const useStore = create(persist(
   params: { ...PRESETS.Default },
   showParams: false,
   showLlmSettings: false,
-  showDocs: false,
+  // Which top-level view is showing -- 'app' (map + decode/encode UI) or
+  // 'docs' (the full-page Documentation view, App.jsx). Backed by a real
+  // URL path (/docs) via history.pushState/popstate (see navigateToDocs/
+  // navigateToApp below and App.jsx's popstate listener) rather than a
+  // plain boolean, so the page is bookmarkable/shareable and the browser
+  // back/forward buttons work -- initialized from the URL a fresh load
+  // actually arrived at, so a direct visit to /docs opens straight into it.
+  route: window.location.pathname === '/docs' ? 'docs' : 'app',
   showTrace: false,
   showResult: false,
   showReplay: false,
@@ -371,9 +378,11 @@ export const useStore = create(persist(
   openTileSourceMenu:  () => set({ showTileSourceMenu: true }),
   closeTileSourceMenu: () => set({ showTileSourceMenu: false }),
   toggleLlmSettings:   () => set(state => ({ showLlmSettings:   !state.showLlmSettings })),
-  toggleDocs:          () => set(state => ({ showDocs: !state.showDocs })),
-  openDocs:            () => set({ showDocs: true }),
-  closeDocs:           () => set({ showDocs: false }),
+  // Real navigation (pushState), not just a state flip -- keeps the URL bar,
+  // bookmarking, and the browser back/forward buttons all correct. App.jsx's
+  // popstate listener is what makes back/forward navigate `route` in turn.
+  openDocs:  () => { window.history.pushState({}, '', '/docs' + window.location.search); set({ route: 'docs' }); },
+  closeDocs: () => { window.history.pushState({}, '', '/'     + window.location.search); set({ route: 'app'  }); },
 
   setLlmConfig: (config) => { saveLlmConfig(config); set({ llmConfig: config }); },
   clearLlmConfig: () => { clearLlmStorage(); set({ llmConfig: null }); },

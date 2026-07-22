@@ -108,11 +108,14 @@ npx wrangler r2 bucket create openlr-lab-tiles       # enable R2 in the dashboar
 npx wrangler pages project create openlr-lab --production-branch=main
 ```
 
-**Push a tile archive to R2** (whenever `openlr-pmtiles` finishes a fresh build):
+**Push a tile archive to R2** (whenever `openlr-pmtiles` finishes a fresh build). `world.pmtiles` is
+multi-GB, well past `wrangler r2 object put`'s 300MB cap, so it goes up via `rclone` (S3-compatible)
+instead — `manifest.json` is tiny and still just uses `wrangler`:
 ```sh
-wrangler r2 object put openlr-lab-tiles/world.pmtiles --file=/path/to/world.pmtiles
+rclone copyto /path/to/world.pmtiles r2:openlr-lab-tiles/world.pmtiles --s3-no-check-bucket -P
 wrangler r2 object put openlr-lab-tiles/manifest.json --file=/path/to/manifest.json
 ```
+One-time `rclone` remote setup and the `--s3-no-check-bucket` rationale: see `WebFrontend.md` §21.
 
 **Day-to-day deploy:**
 ```sh

@@ -1,0 +1,7 @@
+# SPA fallback for Cloudflare Pages: this is a single-page app with its own
+# client-side "routing" (see store.js's `route` field / App.jsx) -- a direct
+# browser visit (or refresh) on any path other than the actual static asset
+# files below has to still serve index.html, or Cloudflare Pages 404s it.
+# Pages Functions (web/functions/tiles/[[path]].js) take precedence over this
+# for their own routes, so /tiles/* is unaffected.
+/*  /index.html  200
