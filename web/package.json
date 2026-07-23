@@ -8,6 +8,7 @@
     "deploy": "cd ../crates/openlr-wasm && wasm-pack build --target web --out-dir ../../web/src/wasm && cd ../../web && vite build && wrangler pages deploy dist --project-name=openlr-lab"
   },
   "dependencies": {
+    "@maptoolkit/maplibre-gl-logo": "^0.1.0",
     "maplibre-gl": "^4",
     "pmtiles": "^3",
     "react": "^18",

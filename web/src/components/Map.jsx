@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { MaptoolkitLogoControl } from '@maptoolkit/maplibre-gl-logo';
 import { PMTiles } from 'pmtiles';
 import { useStore, getSegmentId, getNodeId, getSegGeomCache, getSegIdToTile, getTileGeomCache, getSnapCandidates, loadEncoderTilesNear, previewRouteBetween } from '../store.js';
 import { useDraggable } from '../hooks.js';
@@ -110,6 +111,17 @@ const BASEMAPS = [
   { id: 'satellite',   label: 'Satellite',    style: rasterStyle(
     ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
     'Tiles © Esri — Esri, Maxar, Earthstar Geographics') },
+  // Community-license terms (https://www.maptoolkit.org/) require a visible
+  // logo, not just a text attribution — handled by MaptoolkitLogoControl,
+  // added/removed in handleBasemapChange only while this basemap is active.
+  // "street" specifically (not "summer"/"dark"/"hiking"/"cycling"/"winter"):
+  // those five all include a `color-relief` terrain-shading layer that isn't
+  // in the MapLibre style spec version this app's maplibre-gl@4 validates
+  // against, and fail to load entirely as a result. "street" and "light" are
+  // the only variants that stick to plain vector layers + `hillshade` (which
+  // *is* universally supported), so they're the only two safe to use here
+  // without upgrading maplibre-gl itself.
+  { id: 'maptoolkit',  label: 'Maptoolkit',   style: 'https://styles.maptoolkit.org/street.json' },
 ];
 
 // Custom sources/layers to preserve across basemap switches via transformStyle.
@@ -517,7 +529,8 @@ export default function MapView({ tilesBase, ready }) {
   const [nodeInfo, setNodeInfo] = useState(null);
   const [nodeAnchor, setNodeAnchor] = useState(null);
   const [candAnchor, setCandAnchor] = useState(null);
-  const [basemap, setBasemap] = useState('liberty');
+  const [basemap, setBasemap] = useState('maptoolkit');
+  const maptoolkitLogoControlRef = useRef(null);
   const [segDiagnosis, setSegDiagnosis] = useState(null);
 
   const [measuring, setMeasuring] = useState(false);
@@ -811,7 +824,7 @@ export default function MapView({ tilesBase, ready }) {
 
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style:     'https://tiles.openfreemap.org/styles/liberty',
+      style:     'https://styles.maptoolkit.org/street.json',
       // Conservative default: the whole world. Overridden by the effect below
       // once the configured PMTiles archive's own bounds are known (or left
       // as-is if that lookup fails or the page loaded with an explicit
@@ -839,9 +852,27 @@ export default function MapView({ tilesBase, ready }) {
     map.getCanvasContainer().addEventListener('contextmenu', e => e.preventDefault());
 
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    maptoolkitLogoControlRef.current = new MaptoolkitLogoControl({ position: 'bottom-left' });
+    map.addControl(maptoolkitLogoControlRef.current); // default basemap is 'maptoolkit'; see useState below
 
     // Re-add custom images whenever the style reloads (initial load + basemap switches).
-    map.on('style.load', () => addMapImages(map));
+    // Also strip `hillshade` layers and their `raster-dem` sources from
+    // whatever style just loaded, unconditionally (covers the initial style
+    // above as well as every basemap switch via handleBasemapChange) — this
+    // is a flat, 2D routing tool that's routinely zoomed in well past what
+    // raster-dem sources can serve without rendering solid black (a known
+    // MapLibre GL overzoom issue), so relief-shading is never worth keeping.
+    map.on('style.load', () => {
+      addMapImages(map);
+      const style = map.getStyle();
+      for (const layer of style.layers ?? []) {
+        if (layer.type === 'hillshade') map.removeLayer(layer.id);
+      }
+      const stillUsed = new Set((map.getStyle().layers ?? []).map(l => l.source).filter(Boolean));
+      for (const [srcId, src] of Object.entries(style.sources ?? {})) {
+        if (src.type === 'raster-dem' && !stillUsed.has(srcId)) map.removeSource(srcId);
+      }
+    });
 
     map.on('load', () => {
       // ── OLR segment source ────────────────────────────────────────────────
@@ -1617,6 +1648,10 @@ export default function MapView({ tilesBase, ready }) {
     const entry = BASEMAPS.find(b => b.id === id);
     if (!map || !entry) return;
     map.setStyle(entry.style, {
+      // Note: this only handles switching *to* a basemap. Removing
+      // hillshade/raster-dem (see the 'style.load' handler in the map-init
+      // effect, which covers this uniformly for every style load including
+      // the very first one) happens after this transform, not here.
       transformStyle: (previous, next) => ({
         ...next,
         sources: {
@@ -1632,6 +1667,17 @@ export default function MapView({ tilesBase, ready }) {
       }),
     });
     setBasemap(id);
+
+    // Maptoolkit's license requires its logo to be visible whenever its
+    // tiles are — only while this basemap is actually selected.
+    if (maptoolkitLogoControlRef.current) {
+      map.removeControl(maptoolkitLogoControlRef.current);
+      maptoolkitLogoControlRef.current = null;
+    }
+    if (id === 'maptoolkit') {
+      maptoolkitLogoControlRef.current = new MaptoolkitLogoControl({ position: 'bottom-left' });
+      map.addControl(maptoolkitLogoControlRef.current);
+    }
   }
 
   // ── Tile loading ─────────────────────────────────────────────────────────────
