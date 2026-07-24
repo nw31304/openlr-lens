@@ -32,14 +32,12 @@ pub struct LineLocationInput {
     /// `path`. Empty for a simple two-waypoint route (a single leg).
     ///
     /// Waypoints only select *which segments* the location covers (Layer 1's
-    /// job) — they never dictate where LRPs get placed. `encode_line` sweeps
-    /// the whole path in one pass, always targeting the overall final end, so
-    /// an LRP is only ever inserted where that search genuinely diverges
-    /// from the drawn route; an "overly specified" waypoint sequence along an
-    /// already-optimal path costs nothing extra. These boundaries are passed
-    /// down purely as a recovery mechanism for the one case a plain sweep
-    /// can't resolve on its own — see `sweep_coverage`'s doc comment for
-    /// exactly when and why they get consulted.
+    /// job) — they never dictate where LRPs get placed; `sweep_coverage`
+    /// decides that purely from where the drawn path actually diverges from
+    /// what a decoder would do. These boundaries are used only to size each
+    /// end's Rule-4 expansion budget independently (see the `start_budget`/
+    /// `end_budget` computation just below) — a leg's own core length is
+    /// bounded by its nearest via-point, not by the whole route.
     pub via_split_points: Vec<usize>,
 }
 
@@ -109,20 +107,19 @@ pub fn encode_line(graph: &Graph, input: &LineLocationInput, max_turn_deviation_
     let pos_offset_m = input.start_offset_m + start_exp.distance_m;
     let neg_offset_m = input.end_offset_m + end_exp.distance_m;
 
-    // Steps 3-6: sweep the expanded path into legs in one pass. Waypoints
-    // exist to pin down *which segments* the location covers, not where LRPs
-    // get placed — `sweep_coverage` always targets the overall
-    // `expanded_end_node`, so an LRP only ever gets inserted where the
-    // search genuinely diverges from the drawn path; a declared via-point is
-    // consulted only as a last-resort recovery target when that divergence
-    // check finds nowhere valid to split (see `sweep_coverage`'s doc comment
-    // for exactly when and why). Expansion only ever prepends segments to
-    // the front, so the caller's split points shift by that prefix count.
-    let prefix_len = start_exp.segments.len();
-    let waypoint_boundaries: Vec<usize> = input.via_split_points.iter().map(|&p| p + prefix_len).collect();
+    // Steps 3-6: sweep the expanded path into legs in one pass. Every LRP's
+    // bearing/FRC/FOW are drawn from the segment it should point the decoder
+    // along next, so a leg's own first hop (and any further hop through a
+    // pass-through node with no real alternative — which is exactly what
+    // Rule-4 expansion only ever walks through) is never a candidate the
+    // decoder weighs against some other route; `sweep_coverage` never even
+    // runs a comparison search over that ground. An LRP is inserted only
+    // where a search from the first genuine decision point actually
+    // diverges from the drawn path — never merely because a waypoint (or an
+    // expansion seam) happens to sit somewhere.
     let legs = coverage::sweep_coverage(
         graph, &full_path, expanded_start_node, NO_PRIOR_SEG, expanded_end_node,
-        max_leg_m, max_turn_deviation_deg, zoom, &waypoint_boundaries,
+        max_leg_m, max_turn_deviation_deg, zoom,
     )?;
     if legs.is_empty() {
         return Err(EncodeError::EmptyPath);
@@ -372,14 +369,15 @@ mod tests {
     }
 
     /// A drawn via-point (0→1→2) that is NOT on the shortest 0→2 route (a
-    /// direct 0→2 shortcut exists and is shorter than going via node 1).
-    /// Without `via_split_points`, the coverage sweep searches straight to
-    /// the fixed final end, takes the shortcut instead, disagrees with the
-    /// drawn path from the very first segment, and fails with `NoRoute` even
-    /// though the user's intended route is perfectly encodable. Passing the
-    /// via-point boundary must make this succeed with the via-point forced
-    /// into its own LRP (required for the decoder to reproduce the same
-    /// non-shortcut route rather than also taking the shortcut).
+    /// direct 0→2 shortcut exists and is shorter than going via node 1). The
+    /// shortcut leaves from node 0 itself — the very node the first LRP sits
+    /// on — so that LRP's own bearing already commits the decoder to seg1,
+    /// not the shortcut; node 1 is a plain pass-through (no real
+    /// alternative), so the whole route is forced ground and no comparison
+    /// search ever runs to "discover" the shortcut in the first place. This
+    /// holds regardless of whether a via-point is declared at node 1 —
+    /// waypoints pin down which segments the location covers, not where LRPs
+    /// get placed, and here nothing forces an LRP there either way.
     ///
     /// Nodes 0 and 2 each get an extra spur to a dead-end so they're already
     /// valid (3 distinct neighbors) per Rule-4 — otherwise, in this tiny
@@ -389,7 +387,7 @@ mod tests {
     /// thing this test actually targets. Real road networks essentially
     /// never hit that degenerate case, so it isn't otherwise a concern.
     #[test]
-    fn via_point_off_the_shortest_path_does_not_get_shortcut_away() {
+    fn via_point_off_the_shortest_path_is_not_shortcut_away_either_way() {
         let mut g = Graph::new();
         g.add_node(node(0, 0.0,    0.0));
         g.add_node(node(1, 0.001,  0.001)); // via-point, off to the side
@@ -402,7 +400,8 @@ mod tests {
         g.add_segment(seg(4, 0, 3, 0.001)); // spur: makes node 0 a valid 3-way branch
         g.add_segment(seg(5, 2, 4, 0.001)); // spur: makes node 2 a valid 3-way branch
 
-        // Without via_split_points, the sweep takes the direct shortcut and fails.
+        // Without via_split_points: the shortcut leaves from the first LRP's
+        // own node, so it's never a candidate to begin with.
         let input_no_via = LineLocationInput {
             path: vec![SegmentId(1), SegmentId(2)],
             start_node: NodeId(0),
@@ -410,10 +409,12 @@ mod tests {
             end_offset_m: 0.0,
             via_split_points: vec![],
         };
-        assert!(matches!(encode_line(&g, &input_no_via, 180.0, 15_000.0, 12), Err(EncodeError::NoRoute)));
+        let loc = encode_line(&g, &input_no_via, 180.0, 15_000.0, 12).unwrap();
+        assert_eq!(loc.lrps().unwrap().len(), 2, "start + end, no via forced");
 
-        // With the via-point boundary declared, it succeeds and forces an
-        // LRP exactly at node 1.
+        // Declaring the via-point boundary doesn't change anything either —
+        // it still doesn't force its own LRP, since nothing ever needed
+        // protecting from the shortcut.
         let input_with_via = LineLocationInput {
             path: vec![SegmentId(1), SegmentId(2)],
             start_node: NodeId(0),
@@ -422,11 +423,62 @@ mod tests {
             via_split_points: vec![1],
         };
         let loc = encode_line(&g, &input_with_via, 180.0, 15_000.0, 12).unwrap();
+        assert_eq!(loc.lrps().unwrap().len(), 2, "declaring the via-point doesn't force an extra LRP");
+    }
+
+    /// Regression test for a real bug report: a plain two-waypoint route (no
+    /// interior via-points at all) whose drawn boundary sits on an invalid
+    /// pass-through node. Rule-4 expansion walks it out to a real junction
+    /// (node 0) that happens to have a much shorter direct route to the
+    /// fixed far end than the user's originally-drawn path. Before the fix,
+    /// the coverage sweep ran an unconstrained comparison search from node 0
+    /// itself, which naturally preferred that shortcut, disagreed with the
+    /// drawn path from the very first segment, and had no via-point to
+    /// recover to (via_split_points is necessarily empty for a bare
+    /// two-waypoint route) — a hard `NoRoute`, even though the live preview
+    /// (a real, connected route) had just shown the user this exact path
+    /// existed. The actual fix: node 0's own LRP bearing already commits the
+    /// decoder to the drawn segment, not the shortcut, and node 1 (the
+    /// original boundary) is a plain pass-through with no alternative of its
+    /// own — so the entire route is forced ground, and no comparison search
+    /// ever runs to "discover" the shortcut in the first place.
+    ///
+    /// Graph: node 1 (pass-through boundary) --seg1(core, 100m)-- node 2
+    /// (fixed end, already valid). node 1 also connects via seg2 (90m) to
+    /// node 0, which is a real 3-way junction (spur to node 5) that also
+    /// connects directly to node 2 via seg3 (a 20m shortcut) — a shortcut
+    /// that would win handily if a search from node 0 were ever run, which
+    /// is exactly why it must not be.
+    #[test]
+    fn expansion_seam_shortcut_is_never_a_candidate_the_decoder_considers() {
+        let mut g = Graph::new();
+        g.add_node(node(0, -0.001, 0.0));  // real junction, reached by start-expansion
+        g.add_node(node(1, 0.0,    0.0));  // pass-through drawn boundary
+        g.add_node(node(2, 0.001,  0.0));  // fixed end, already valid
+        g.add_node(node(3, 0.0011, 0.001)); // spur off node 2
+        g.add_node(node(4, 0.0011, -0.001)); // spur off node 2
+        g.add_node(node(5, -0.002, 0.001)); // spur off node 0
+        g.add_segment(seg(1, 1, 2, 100.0 / 111_000.0));  // core: node1 <-> node2, 100m
+        g.add_segment(seg(2, 0, 1, 90.0 / 111_000.0));   // node0 <-> node1 (expansion segment), 90m
+        g.add_segment(seg(3, 0, 2, 20.0 / 111_000.0));   // node0 <-> node2 (shortcut), 20m
+        g.add_segment(seg(4, 2, 3, 0.001));               // spur: makes node 2 a valid junction
+        g.add_segment(seg(5, 2, 4, 0.001));               // spur: makes node 2 a valid junction
+        g.add_segment(seg(6, 0, 5, 0.001));               // spur: makes node 0 a valid junction
+
+        let input = LineLocationInput {
+            path: vec![SegmentId(1)],
+            start_node: NodeId(1),
+            start_offset_m: 0.0,
+            end_offset_m: 0.0,
+            via_split_points: vec![],
+        };
+
+        let loc = encode_line(&g, &input, 180.0, 15_000.0, 12)
+            .expect("the shortcut leaves from node 0's own LRP, so bearing already handles it");
         let lrps = loc.lrps().unwrap();
-        assert_eq!(lrps.len(), 3, "start + via + end");
-        let via_lrp = &lrps[1];
-        assert!((via_lrp.coord.0 - 0.001).abs() < 1e-9 && (via_lrp.coord.1 - 0.001).abs() < 1e-9,
-            "middle LRP should sit at the via-point (node 1), not be shortcut away");
+        assert_eq!(lrps.len(), 2, "start (at the expanded node 0) + end — no via-point was ever declared");
+        assert!((lrps[0].coord.0 - (-0.001)).abs() < 1e-9 && (lrps[0].coord.1 - 0.0).abs() < 1e-9,
+            "first LRP should sit at the expanded node 0, not the original invalid node 1");
     }
 
     /// A via-point (node 2) whose only way onward is a ~165° turn relative to

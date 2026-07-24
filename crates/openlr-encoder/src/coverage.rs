@@ -1,10 +1,14 @@
-//! Table 54 Steps 3-6: the forward coverage sweep. Not a bisection — each
-//! round searches shortest-path from the (advancing) current start all the
-//! way to the location's *fixed* end; on divergence, an intermediate LRP is
-//! dropped at the last point of agreement (preferring a valid node there) and
-//! the search restarts from there to the same end.
+//! Table 54 Steps 3-6: the forward coverage sweep. Not a bisection — each leg
+//! starts at an LRP whose bearing/FRC/FOW already commit the decoder to a
+//! specific first hop, so no competing route can ever "win" that hop away.
+//! The sweep walks forward past that hop, and past any further nodes with no
+//! real alternative of their own (Rule-4's "invalid" — a pure pass-through),
+//! before ever asking whether a competing shortest path exists to disagree
+//! with the rest. Only once a genuine decision point (a valid node with real
+//! alternatives) is reached does an actual search run, and only a divergence
+//! found *there* ever drops an intermediate LRP.
 
-use openlr_graph::{shortest_path, Graph, NodeId, PathOutcome, SegmentId};
+use openlr_graph::{shortest_path, Graph, NodeId, PathOutcome, SegmentId, NO_PRIOR_SEG};
 
 use crate::EncodeError;
 
@@ -17,32 +21,24 @@ pub struct Leg {
 
 /// Sweep `path` (the full desired route, already expanded to valid start/end
 /// nodes) into legs, inserting intermediate LRPs wherever necessary so that
-/// each leg is independently reproducible by a shortest-path search. Every
-/// round searches from the (advancing) current position all the way to the
-/// *fixed* `end_node`, regardless of how many waypoints lie ahead — an LRP
-/// only ever gets inserted where the search actually diverges from `path`,
-/// never merely because a waypoint happens to sit there (waypoints pin down
-/// which segments the location covers, not where LRPs are placed).
+/// each leg is independently reproducible by a shortest-path search.
 ///
-/// `start_seg` biases the very first search the same way A* seeds an
-/// incoming segment for turn-angle purposes: pass `NO_PRIOR_SEG` when there's
-/// no "before" to compare against (the location's own overall start).
+/// Every leg's start is an LRP, and an LRP's bearing/FRC/FOW are drawn from
+/// the segment it should point the decoder along next — so a leg's own
+/// first hop, and any further hop through a node with no real alternative,
+/// is never in competition with some other route the decoder might prefer;
+/// it isn't a candidate the decoder even considers. `sweep_coverage` never
+/// runs a comparison search over that forced ground (see
+/// `forced_prefix_len`) — only once it reaches the first node offering a
+/// genuine choice does it search, targeting the *fixed* `end_node` from
+/// there. An LRP is inserted only where that search actually diverges from
+/// `path` — never merely because a waypoint happens to sit somewhere
+/// (waypoints pin down which segments the location covers, not where LRPs
+/// are placed).
 ///
-/// `waypoint_boundaries` is a recovery mechanism, not a splitting rule: each
-/// entry is a segment-count offset into `path` where a user-drawn waypoint
-/// falls (strictly increasing, each in `1..path.len()`; pass `&[]` for a
-/// plain two-endpoint route with no interior waypoints). It is consulted
-/// *only* when the search toward `end_node` diverges from `path` with zero
-/// prefix agreement — i.e. the very next segment isn't part of any route to
-/// the fixed end at all, so there is no valid divergence point to split at
-/// (see `best_intermediate_position`). In that specific case, retargeting
-/// the search at the next waypoint instead is guaranteed to succeed (Layer 1
-/// already found a route there via genuine shortest-path search, and by
-/// Dijkstra's optimal-substructure property re-deriving it from the same
-/// state can't disagree) — this forces just enough progress to get unstuck,
-/// after which the sweep immediately resumes targeting the fixed `end_node`
-/// again, so any waypoints beyond the recovery point still only get an LRP
-/// if they too turn out to be necessary.
+/// `start_seg` is the incoming segment at `start_node`, for turn-angle
+/// purposes — pass `NO_PRIOR_SEG` when there's no "before" to compare
+/// against (the location's own overall start).
 ///
 /// `max_turn_deviation_deg` is the same turn-angle cap decode-side A* uses
 /// (`DecodeParams::max_interior_turn_deviation_deg`) — despite the decode-only
@@ -59,24 +55,17 @@ pub fn sweep_coverage(
     max_leg_m: f64,
     max_turn_deviation_deg: f64,
     zoom: u8,
-    waypoint_boundaries: &[usize],
 ) -> Result<Vec<Leg>, EncodeError> {
     let mut legs = Vec::new();
     let mut remaining = path;
     let mut current_start = start_node;
     let mut current_start_seg = start_seg;
-    let mut consumed = 0usize;
 
     loop {
-        let result = match shortest_path(graph, current_start, current_start_seg, end_node, 7, max_turn_deviation_deg, 0, zoom) {
-            PathOutcome::Found(r) => r,
-            PathOutcome::NoPath => return Err(EncodeError::NoRoute),
-            PathOutcome::NeedsTile(tk) => return Err(EncodeError::NeedsTile(tk)),
-        };
+        let forced = forced_prefix_len(graph, current_start, current_start_seg, remaining, max_turn_deviation_deg)
+            .ok_or(EncodeError::NoRoute)?;
 
-        let agreement = common_prefix_len(remaining, &result.segments);
-
-        if agreement == remaining.len() {
+        if forced == remaining.len() {
             // Rule-1 applies here too, not just on the split-required branch
             // below — a perfectly-reproducible leg can still be longer than
             // `max_leg_m` allows (this was never reachable when the cap was
@@ -94,18 +83,43 @@ pub fn sweep_coverage(
             return Ok(legs);
         }
 
-        let raw_split = best_intermediate_position(graph, current_start, remaining, agreement);
-        let split_at = match raw_split {
-            Some(k) if k > 0 => k,
-            // Zero prefix agreement — the search toward `end_node` doesn't
-            // even take `remaining`'s first segment. No divergence point
-            // exists to split at; fall back to the next waypoint ahead, if
-            // any, as a one-off recovery target.
-            _ => match waypoint_boundaries.iter().find(|&&b| b > consumed) {
-                Some(&boundary) => boundary - consumed,
-                None => return Err(EncodeError::NoRoute),
-            },
+        // Beyond the forced ground, a real decision point has been reached —
+        // now it's meaningful to ask what a shortest-path search targeting
+        // the fixed end would actually do from here.
+        let anchor = trace_end_node(graph, current_start, &remaining[..forced])
+            .ok_or(EncodeError::NoRoute)?;
+        let anchor_incoming_seg = remaining[forced - 1];
+        let tail = &remaining[forced..];
+
+        let result = match shortest_path(graph, anchor, anchor_incoming_seg, end_node, 7, max_turn_deviation_deg, 0, zoom) {
+            PathOutcome::Found(r) => r,
+            PathOutcome::NoPath => return Err(EncodeError::NoRoute),
+            PathOutcome::NeedsTile(tk) => return Err(EncodeError::NeedsTile(tk)),
         };
+
+        let agreement = common_prefix_len(tail, &result.segments);
+
+        if agreement == tail.len() {
+            let leg_len_m: f64 = remaining.iter()
+                .filter_map(|id| graph.segments.get(id))
+                .map(|s| s.length_m)
+                .sum();
+            if leg_len_m > max_leg_m {
+                return Err(EncodeError::LegTooLong { length_m: leg_len_m, max_leg_m });
+            }
+            legs.push(Leg { start_node: current_start, segments: remaining.to_vec() });
+            return Ok(legs);
+        }
+
+        // `anchor` is already a confirmed-valid node — that's why the forced
+        // walk stopped there — so unlike a raw divergence measured from
+        // `current_start` itself (whose own first hop is masked by that
+        // LRP's own bearing), zero agreement here is a real, legitimate
+        // split point, not a degenerate one requiring a separate recovery
+        // mechanism.
+        let split_within_tail = best_intermediate_position(graph, anchor, tail, agreement)
+            .expect("best_intermediate_position always returns Some");
+        let split_at = forced + split_within_tail;
 
         let leg_segments = remaining[..split_at].to_vec();
         let intermediate_node = trace_end_node(graph, current_start, &leg_segments)
@@ -126,10 +140,53 @@ pub fn sweep_coverage(
 
         legs.push(Leg { start_node: current_start, segments: leg_segments });
         remaining = &remaining[split_at..];
-        consumed += split_at;
         current_start = intermediate_node;
         current_start_seg = last_seg_of_leg;
     }
+}
+
+/// Walks forward from `start_node` along `remaining`, always taking at least
+/// one hop — the leg's own bearing-selected first segment is never in
+/// competition, see the module doc — then continuing through any further
+/// nodes with no real alternative of their own (Rule-4's "invalid": a pure
+/// pass-through), stopping at the first node that either offers a genuine
+/// choice or is the end of `remaining` (which is always `end_node`, itself
+/// always valid). Validates turn-angle/U-turn legality of each hop along the
+/// way exactly as `Graph::successors` would — this ground is never covered
+/// by an actual search, so nothing else checks it. Returns `None` if the
+/// walk hits a disconnected segment or an illegal turn.
+fn forced_prefix_len(
+    graph: &Graph,
+    start_node: NodeId,
+    start_seg: SegmentId,
+    remaining: &[SegmentId],
+    max_turn_deviation_deg: f64,
+) -> Option<usize> {
+    let mut node = start_node;
+    let mut incoming = start_seg;
+    let mut pos = 0;
+    while pos < remaining.len() {
+        let next_seg = remaining[pos];
+        if incoming != NO_PRIOR_SEG {
+            if next_seg == incoming {
+                return None; // exact U-turn -- never legal, regardless of angle
+            }
+            if max_turn_deviation_deg < 180.0 {
+                if let Some(dev) = graph.turn_deviation_deg(incoming, node, next_seg) {
+                    if dev > max_turn_deviation_deg {
+                        return None;
+                    }
+                }
+            }
+        }
+        node = other_end(graph, next_seg, node)?;
+        incoming = next_seg;
+        pos += 1;
+        if pos == remaining.len() || graph.is_valid_node(node) {
+            return Some(pos);
+        }
+    }
+    Some(pos)
 }
 
 /// Length of the shared prefix of `a` and `b`.
@@ -247,7 +304,7 @@ mod tests {
         g.add_segment(seg(2, 1, 2, 100.0));
 
         let path = vec![SegmentId(1), SegmentId(2)];
-        let legs = sweep_coverage(&g, &path, NodeId(0), NO_PRIOR_SEG, NodeId(2), 15_000.0, 180.0, 12, &[]).unwrap();
+        let legs = sweep_coverage(&g, &path, NodeId(0), NO_PRIOR_SEG, NodeId(2), 15_000.0, 180.0, 12).unwrap();
         assert_eq!(legs.len(), 1);
         assert_eq!(legs[0].segments, path);
         assert_eq!(legs[0].start_node, NodeId(0));
@@ -267,7 +324,7 @@ mod tests {
         g.add_segment(seg(2, 1, 2, 100.0));
 
         let path = vec![SegmentId(1), SegmentId(2)];
-        match sweep_coverage(&g, &path, NodeId(0), NO_PRIOR_SEG, NodeId(2), 50.0, 180.0, 12, &[]) {
+        match sweep_coverage(&g, &path, NodeId(0), NO_PRIOR_SEG, NodeId(2), 50.0, 180.0, 12) {
             Err(EncodeError::LegTooLong { length_m, max_leg_m }) => {
                 assert!((length_m - 200.0).abs() < 1e-6);
                 assert_eq!(max_leg_m, 50.0);
@@ -277,16 +334,18 @@ mod tests {
     }
 
     #[test]
-    fn only_the_necessary_waypoint_boundary_is_used_as_a_recovery_target() {
+    fn shortcut_off_the_first_lrp_needs_no_intermediate() {
         // 0 --seg1--> 1 --seg2--> 2 --seg3--> 3, plus a direct shortcut
-        // seg4: 0 -> 2 (10m) that bypasses node 1 entirely. Two waypoints
-        // are declared — at node 1 (boundary 1) and at node 2 (boundary
-        // 2) — but only node 1 is actually needed to keep the sweep off the
-        // shortcut; once resumed from there, the rest of the route
-        // (1->2->3) has no further shortcut, so node 2's declared boundary
-        // should never be consulted. Waypoints only select which segments
-        // the location covers — an "overly specified" extra one shouldn't
-        // cost an extra LRP.
+        // seg4: 0 -> 2 (10m) that bypasses node 1 entirely. The shortcut
+        // leaves from node 0 itself — the very node the leg's own LRP sits
+        // on — so its bearing already commits the decoder to seg1, not
+        // seg4; the shortcut is never a candidate the decoder considers, and
+        // no intermediate LRP is needed to protect against it. The forced
+        // walk covers seg1 (bearing-selected) and seg2 (node 1 is a plain
+        // pass-through, no real alternative) before ever reaching a real
+        // decision point (node 2, valid via seg3/seg4), at which point the
+        // rest of the route (seg3 to the fixed end) has no further shortcut
+        // to disagree with either.
         let mut g = Graph::new();
         g.add_node(node(0, 0.0, 0.0));
         g.add_node(node(1, 0.001, 0.0));
@@ -298,28 +357,44 @@ mod tests {
         g.add_segment(seg(4, 0, 2, 10.0)); // shortcut bypassing node 1
 
         let path = vec![SegmentId(1), SegmentId(2), SegmentId(3)];
-        let legs = sweep_coverage(&g, &path, NodeId(0), NO_PRIOR_SEG, NodeId(3), 15_000.0, 180.0, 12, &[1, 2]).unwrap();
+        let legs = sweep_coverage(&g, &path, NodeId(0), NO_PRIOR_SEG, NodeId(3), 15_000.0, 180.0, 12).unwrap();
 
-        assert_eq!(legs.len(), 2, "only the node-1 recovery should have been needed, not both declared waypoints");
+        assert_eq!(legs.len(), 1, "the shortcut leaves from the LRP's own node, so bearing already handles it");
+        assert_eq!(legs[0].segments, path);
+        assert_eq!(legs[0].start_node, NodeId(0));
+    }
+
+    #[test]
+    fn shortcut_past_a_real_junction_does_need_an_intermediate() {
+        // 0 --seg1--> 1 --seg2--> 2 --seg3--> 3, with node 1 a *real* 3-way
+        // junction (extra spur seg9) and a direct shortcut seg4: 1 -> 3 (10m)
+        // that bypasses node 2. Unlike the shortcut-off-the-first-LRP case,
+        // this shortcut leaves from node 1 — a node reached only *after* the
+        // forced walk (seg1 is bearing-selected departing node 0, but node 1
+        // itself offers a genuine alternative, so it's a real decision
+        // point, not forced ground). A real intermediate LRP is needed there
+        // to steer the decoder onto seg2 instead of the seg4 shortcut.
+        let mut g = Graph::new();
+        g.add_node(node(0, 0.0, 0.0));
+        g.add_node(node(1, 0.001, 0.0));
+        g.add_node(node(2, 0.002, 0.0));
+        g.add_node(node(3, 0.003, 0.0));
+        g.add_node(node(4, 0.001, 0.001)); // spur off node 1
+        g.add_segment(seg(1, 0, 1, 100.0));
+        g.add_segment(seg(2, 1, 2, 100.0));
+        g.add_segment(seg(3, 2, 3, 100.0));
+        g.add_segment(seg(4, 1, 3, 10.0)); // shortcut bypassing node 2
+        g.add_segment(seg(9, 1, 4, 100.0)); // spur: makes node 1 a valid 3-way junction
+
+        let path = vec![SegmentId(1), SegmentId(2), SegmentId(3)];
+        let legs = sweep_coverage(&g, &path, NodeId(0), NO_PRIOR_SEG, NodeId(3), 15_000.0, 180.0, 12).unwrap();
+
+        assert_eq!(legs.len(), 2, "node 1 is a real decision point past the forced ground, so its shortcut needs protecting");
         assert_eq!(legs[0].segments, vec![SegmentId(1)]);
         assert_eq!(legs[0].start_node, NodeId(0));
         assert_eq!(legs[1].segments, vec![SegmentId(2), SegmentId(3)]);
         assert_eq!(legs[1].start_node, NodeId(1));
     }
-
-    // NOTE on why there's no synthetic "a shortcut forces an intermediate"
-    // test here: by Dijkstra/A*'s optimal-substructure property, if segment Y
-    // genuinely beats segment X for reaching the *same fixed far end* from a
-    // given (node, incoming_seg) state, restarting the search from that exact
-    // state (as an intermediate LRP) makes the identical choice again — a true
-    // shortcut can never be "fixed" by splitting, no matter where you split.
-    // The whitepaper's own Step 7 note confirms intermediate insertion is
-    // really for *heuristic-search quirks and ties* ("if the encoder uses a
-    // heuristic function... this heuristic leads the search to the end of the
-    // location but not along the location itself"), not for overriding a
-    // genuinely shorter competing route. That's inherently sensitive to
-    // implementation-level tie-breaking, so it's exercised by the real-map
-    // round-trip test rather than a contrived synthetic graph here.
 
     #[test]
     fn common_prefix_len_stops_at_first_mismatch() {
